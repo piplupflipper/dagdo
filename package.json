@@ -1,0 +1,28 @@
+{
+    "name": "entodo",
+    "version": "0.1.0",
+    "private": true,
+    "scripts": {
+        "dev": "next dev",
+        "build": "next build",
+        "start": "next start",
+        "check": "biome check && tsc --noEmit && knip",
+        "format": "biome check --write"
+    },
+    "dependencies": {
+        "next": "16.3.0",
+        "react": "19.2.8",
+        "react-dom": "19.2.8"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.5.7",
+        "@tailwindcss/postcss": "^4",
+        "@types/node": "^20",
+        "@types/react": "^19",
+        "@types/react-dom": "^19",
+        "babel-plugin-react-compiler": "^1.0.0",
+        "knip": "^6.32.0",
+        "tailwindcss": "^4",
+        "typescript": "^5"
+    }
+}

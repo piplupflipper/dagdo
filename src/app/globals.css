@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+:root {
+    /* パレット層 (docs/frontend-design.md §10): 確定済みパレット値を保持する。コンポーネントから直接参照しない */
+    --palette-bg: #ffffff;
+    --palette-bg-alt: #eef1f5;
+    --palette-bg-sunken: #e3e7ee;
+    --palette-text: #1b2433;
+    --palette-text-dim: #5b6472;
+    --palette-border: #dde2ea;
+    --palette-accent: #2454c9;
+    --palette-blocked: #b45309;
+    --palette-overdue: #dc2626;
+    --palette-done: #97a1b0;
+}
+
+@theme inline {
+    /*
+     * セマンティック層 (docs/frontend-design.md §10): 用途名でパレット層を参照する
+     * コンポーネントは常にこのセマンティック層 (--color-*, --radius-base) のみを参照し、
+     * パレット層 (--palette-*) や生の16進値を直接参照してはならない
+     * 将来のダークモード対応時はパレット層側の値のみを差し替える
+     */
+    --color-bg: var(--palette-bg);
+    --color-bg-alt: var(--palette-bg-alt);
+    --color-bg-sunken: var(--palette-bg-sunken);
+    --color-text: var(--palette-text);
+    --color-text-dim: var(--palette-text-dim);
+    --color-border: var(--palette-border);
+    --color-accent: var(--palette-accent);
+    --color-blocked: var(--palette-blocked);
+    --color-overdue: var(--palette-overdue);
+    --color-done: var(--palette-done);
+    --radius-base: 6px;
+}
+
+body {
+    background: var(--color-bg);
+    color: var(--color-text);
+}
