@@ -19,11 +19,16 @@ help: ## ターゲット一覧を表示する
 ##@ セットアップ
 
 .PHONY: setup
-setup: ## 初回セットアップ (依存インストール + DB 起動 + reset + 型生成)
+setup: ## 初回セットアップ (依存インストール + DB 起動 + reset + 型生成 + .env.local 生成)
 	npm install
 	$(MAKE) db-start
 	$(MAKE) db-reset
 	$(MAKE) db-types
+	$(MAKE) env-local
+
+.PHONY: env-local
+env-local: ## .env.local をローカル Supabase の接続情報から生成する (既存なら何もしない)
+	bash scripts/setup-env-local.sh
 
 ##@ Frontend (Next.js)
 
