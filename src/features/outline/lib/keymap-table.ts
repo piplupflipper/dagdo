@@ -6,9 +6,9 @@ import type { OutlineMode } from "@/store/types";
 /**
  * `OutlineShell` が注入する副作用 (docs/frontend-design.md §6.1)
  *
- * DB アクセスを伴う操作 (x/o/O/J/K/</>/dd/Enter) と、ストアに置かない UI ローカル state の操作
- * (ヘルプ開閉・行内編集の開始) を持つ。
- * モード遷移のようなストア内完結の操作 (j/k/gg/G/za/V/Esc 等) は keymap エントリの `run` が
+ * DB アクセスを伴う操作 (x/o/O/J/K/</>/dd/Enter)、ストアに置かない UI ローカル state の操作
+ * (ヘルプ開閉・行内編集の開始)、そしてストアが持たない木構造を要する操作 ({ / } / zM) を持つ。
+ * モード遷移のようなストア内完結の操作 (j/k/gg/G/C-d/C-u/za/zo/zc/zR/V/Esc 等) は keymap エントリの `run` が
  * `context.store` を直接叩くため、ここには含まれない
  */
 export type OutlineKeymapHandlers = {
@@ -22,6 +22,19 @@ export type OutlineKeymapHandlers = {
     startInlineTitleEdit: (caret: InlineTitleCaret) => void;
     /** `Enter`。DetailPane の編集領域へフォーカスを移す */
     focusDetailEditor: () => void;
+    /**
+     * `{`/`}`。同じ actual parent の 1 つ前/後の兄弟へカーソルを移す (子孫はスキップされる)
+     *
+     * 兄弟の判定に parent_id が要り、`visibleTaskIds` の添字演算では解けないためハンドラ側に置く
+     */
+    jumpToSibling: (direction: "up" | "down") => void;
+    /**
+     * `zM`。子を持つ行をすべて折りたたむ
+     *
+     * 「子を持つ行」の判定に木構造が要るためハンドラ側で対象 ID を算出し、ストアへは ID の集合だけを渡す。
+     * 対になる `zR` がストアのアクション (expandAll) だけで済むのと非対称なのはこの理由による
+     */
+    collapseAll: () => void;
     /** `J`/`K`。同一 parent 内で 1 つ上/下へ reorderTasks する */
     moveCursorSibling: (direction: "up" | "down") => void;
     /** `>`。indent (直前行を新しい親にする) */
@@ -91,6 +104,11 @@ export const outlineKeymap: readonly KeymapEntry[] = [
     { keys: "k", mode: "NORMAL", category: "移動", description: "カーソルを前の行へ", run: ({ store }) => store.moveCursor("up") },
     { keys: "g g", mode: "NORMAL", category: "移動", description: "アウトライン先頭行へジャンプ", run: ({ store }) => store.jumpToTop() },
     { keys: "G", mode: "NORMAL", category: "移動", description: "アウトライン末尾行へジャンプ", run: ({ store }) => store.jumpToBottom() },
+    { keys: "{", mode: "NORMAL", category: "移動", description: "前の兄弟へ移動 (子孫をスキップ)", run: ({ handlers }) => handlers.jumpToSibling("up") },
+    { keys: "}", mode: "NORMAL", category: "移動", description: "次の兄弟へ移動 (子孫をスキップ)", run: ({ handlers }) => handlers.jumpToSibling("down") },
+    // Ctrl-d / Ctrl-u は Chrome のブックマーク追加・ソース表示と衝突するが、dispatcher が preventDefault で奪う (Issue #18 で合意済み)
+    { keys: "C-d", mode: "NORMAL", category: "移動", description: "カーソルを 10 行下へ", run: ({ store }) => store.jumpCursorRows("down") },
+    { keys: "C-u", mode: "NORMAL", category: "移動", description: "カーソルを 10 行上へ", run: ({ store }) => store.jumpCursorRows("up") },
 
     // NORMAL: 編集
     { keys: "x", mode: "NORMAL", category: "編集", description: "カーソル行を完了", run: ({ handlers }) => handlers.completeCursor() },
@@ -127,6 +145,36 @@ export const outlineKeymap: readonly KeymapEntry[] = [
             store.toggleCollapsed(store.cursorTaskId);
         },
     },
+    {
+        keys: "z o",
+        mode: "NORMAL",
+        category: "折りたたみ",
+        description: "カーソル行の折りたたみを開く",
+        run: ({ store }) => {
+            if (store.cursorTaskId === null) {
+                return;
+            }
+            store.setCollapsed(store.cursorTaskId, false);
+        },
+    },
+    {
+        keys: "z c",
+        mode: "NORMAL",
+        category: "折りたたみ",
+        description: "カーソル行の折りたたみを閉じる",
+        run: ({ store }) => {
+            if (store.cursorTaskId === null) {
+                return;
+            }
+            store.setCollapsed(store.cursorTaskId, true);
+        },
+    },
+    // zR と zM で置き場所が非対称なのは、ストアへタスクデータを複製しない方針 (docs/frontend-design.md §5.2) による。
+    // zR は collapsedTaskIds を空にするだけでフラットな集合操作に閉じるためストアのアクションで足りるが、
+    // zM は「子を持つ行」の判定に木構造が要り、ストアの visibleTaskIds (depth も parent_id も持たない ID 配列) では解けない。
+    // そのため対象 ID の算出だけを OutlineShell のハンドラへ出し、ストアへは ID の集合を渡す
+    { keys: "z R", mode: "NORMAL", category: "折りたたみ", description: "すべて展開する", run: ({ store }) => store.expandAll() },
+    { keys: "z M", mode: "NORMAL", category: "折りたたみ", description: "すべて折りたたむ", run: ({ handlers }) => handlers.collapseAll() },
 
     // NORMAL: モード
     { keys: "V", mode: "NORMAL", category: "モード", description: "ビジュアルモードへ入る", run: ({ store }) => store.enterVisual() },

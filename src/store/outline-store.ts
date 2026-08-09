@@ -28,9 +28,23 @@ type OutlineActions = {
     setVisibleTaskIds: (ids: readonly string[]) => void;
     setCursor: (taskId: string | null) => void;
     moveCursor: (direction: "up" | "down") => void;
+    /** `C-d` / `C-u`。表示順で CURSOR_JUMP_ROW_COUNT 行ぶんカーソルを動かす */
+    jumpCursorRows: (direction: "up" | "down") => void;
     jumpToTop: () => void;
     jumpToBottom: () => void;
     toggleCollapsed: (taskId: string) => void;
+    /** `z o` / `z c`。カーソル行の折りたたみを開く / 閉じる */
+    setCollapsed: (taskId: string, collapsed: boolean) => void;
+    /** `z R`。すべて展開する */
+    expandAll: () => void;
+    /**
+     * `z M`。渡された ID 集合をそのまま折りたたみ集合にする
+     *
+     * 対象 (子を持つ行) の算出は呼び出し側 (OutlineShell) が行う。「子を持つか」の判定には木構造が要り、
+     * ストアはタスクデータを複製しないためである (docs/frontend-design.md §5.2)。
+     * 対になる expandAll がストア内で完結するのに対して非対称なのはこの理由による
+     */
+    collapseAll: (taskIds: readonly string[]) => void;
     enterVisual: () => void;
     extendVisual: (direction: "up" | "down") => void;
     exitVisual: () => void;
@@ -52,7 +66,15 @@ const rangeBetween = (ids: readonly string[], anchorId: string, cursorId: string
     return new Set(ids.slice(start, end + 1));
 };
 
-const neighborId = (ids: readonly string[], currentId: string | null, direction: "up" | "down"): string | null => {
+/** `C-d` / `C-u` で一度に動かす行数。画面の高さは実測せず固定値とする (予測可能性と実装コストを優先する判断) */
+const CURSOR_JUMP_ROW_COUNT = 10;
+
+/**
+ * 表示順の ID 配列上で、現在位置から offset 行ぶん動かした先の ID を返す
+ *
+ * 端を越える移動は端に丸める (`j` / `k` / `C-d` / `C-u` はいずれも先頭・末尾で留まる)
+ */
+const offsetId = (ids: readonly string[], currentId: string | null, offset: number): string | null => {
     if (ids.length === 0) {
         return null;
     }
@@ -63,9 +85,11 @@ const neighborId = (ids: readonly string[], currentId: string | null, direction:
     if (index < 0) {
         return ids[0] ?? null;
     }
-    const nextIndex = direction === "down" ? Math.min(index + 1, ids.length - 1) : Math.max(index - 1, 0);
+    const nextIndex = Math.min(Math.max(index + offset, 0), ids.length - 1);
     return ids[nextIndex] ?? null;
 };
+
+const neighborId = (ids: readonly string[], currentId: string | null, direction: "up" | "down"): string | null => offsetId(ids, currentId, direction === "down" ? 1 : -1);
 
 export const useOutlineStore = create<OutlineState & OutlineActions>((set, get) => ({
     mode: "NORMAL",
@@ -92,6 +116,11 @@ export const useOutlineStore = create<OutlineState & OutlineActions>((set, get) 
         set({ cursorTaskId: neighborId(visibleTaskIds, cursorTaskId, direction) });
     },
 
+    jumpCursorRows: (direction) => {
+        const { visibleTaskIds, cursorTaskId } = get();
+        set({ cursorTaskId: offsetId(visibleTaskIds, cursorTaskId, direction === "down" ? CURSOR_JUMP_ROW_COUNT : -CURSOR_JUMP_ROW_COUNT) });
+    },
+
     jumpToTop: () => {
         const { visibleTaskIds } = get();
         set({ cursorTaskId: visibleTaskIds[0] ?? null });
@@ -102,15 +131,21 @@ export const useOutlineStore = create<OutlineState & OutlineActions>((set, get) 
         set({ cursorTaskId: visibleTaskIds[visibleTaskIds.length - 1] ?? null });
     },
 
-    toggleCollapsed: (taskId) => {
+    toggleCollapsed: (taskId) => get().setCollapsed(taskId, !get().collapsedTaskIds.has(taskId)),
+
+    setCollapsed: (taskId, collapsed) => {
         const next = new Set(get().collapsedTaskIds);
-        if (next.has(taskId)) {
-            next.delete(taskId);
-        } else {
+        if (collapsed) {
             next.add(taskId);
+        } else {
+            next.delete(taskId);
         }
         set({ collapsedTaskIds: next });
     },
+
+    expandAll: () => set({ collapsedTaskIds: new Set<string>() }),
+
+    collapseAll: (taskIds) => set({ collapsedTaskIds: new Set(taskIds) }),
 
     enterVisual: () => {
         const { cursorTaskId } = get();
