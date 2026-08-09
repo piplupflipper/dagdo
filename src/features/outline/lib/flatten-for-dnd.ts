@@ -85,6 +85,29 @@ export const computeSiblingSwap = ({ tasks, taskId, direction }: { tasks: readon
 };
 
 /**
+ * 同じ actual parent を持つ兄弟のうち、1 つ前 (`{`) / 後 (`}`) のタスク ID を返す純粋関数 (docs/frontend-design.md §6.1)
+ *
+ * 見るのが兄弟グループだけなので、間に挟まる子孫は自然にスキップされる。
+ * 並び順は兄弟グループ内の position に従う (表示順と一致する)。
+ * `visibleTaskIds` は depth も parent_id も持たず兄弟を判定できないため、ストアのアクションではなく
+ * ここで解決して `setCursor` へ渡す (docs/frontend-design.md §5.2)
+ *
+ * @returns 端の兄弟にいる場合・対象が見つからない場合は null (呼び出し側はカーソルを動かさない)
+ */
+export const findSiblingTaskId = ({ tasks, taskId, direction }: { tasks: readonly AppTask[]; taskId: string; direction: "up" | "down" }): string | null => {
+    const target = tasks.find((task) => task.id === taskId);
+    if (target === undefined) {
+        return null;
+    }
+    const siblings = siblingsOf(tasks, target.parent_id);
+    const index = siblings.findIndex((task) => task.id === taskId);
+    if (index < 0) {
+        return null;
+    }
+    return siblings[direction === "down" ? index + 1 : index - 1]?.id ?? null;
+};
+
+/**
  * タスクを直前の兄弟の子として繰り込む (indent, `>`, docs/frontend-design.md §6.1, §9)
  *
  * 新しい親 (直前の兄弟) の子の末尾に追加する

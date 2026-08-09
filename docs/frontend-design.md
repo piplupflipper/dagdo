@@ -295,9 +295,13 @@ type OutlineActions = {
 | NORMAL | `j` / `k` | NORMAL | `cursorTaskId` を隣接タスクへ更新 |
 | NORMAL | `gg`（連続 2 打鍵で確定） | NORMAL | `cursorTaskId` をアウトライン表示順の先頭タスク ID へ更新 |
 | NORMAL | `G` | NORMAL | `cursorTaskId` をアウトライン表示順の末尾タスク ID へ更新 |
+| NORMAL | `C-d` / `C-u` | NORMAL | `cursorTaskId` を表示順で 10 行下 / 上のタスク ID へ更新（端を越える場合は端で留まる） |
+| NORMAL | `{` / `}` | NORMAL | `cursorTaskId` を同じ actual parent の 1 つ前 / 後の兄弟へ更新（端の兄弟では動かさない） |
 | NORMAL | `V` | VISUAL | `visualAnchorTaskId` = 現在の `cursorTaskId`、`visualSelectedTaskIds` = `{cursorTaskId}` |
 | NORMAL | `/` | SEARCH | `searchQuery` を空文字で初期化 |
 | NORMAL | `za` | NORMAL | `collapsedTaskIds` に対象 ID を追加 or 削除 |
+| NORMAL | `zo` / `zc` | NORMAL | `collapsedTaskIds` から対象 ID を削除 / へ追加 |
+| NORMAL | `zR` / `zM` | NORMAL | `collapsedTaskIds` を空集合へ / 子を持つ行の ID 集合へ置き換え（`zM` の対象 ID は `OutlineShell` が算出する。第 6.1 節） |
 | VISUAL | `j` / `k` | VISUAL | `cursorTaskId` を移動し、anchor から cursor までの範囲で `visualSelectedTaskIds` を再計算 |
 | VISUAL | `x` | NORMAL | 選択範囲の各タスクへ `completeTask` を実行後、選択を解除（第 6 章） |
 | VISUAL | `Esc` | NORMAL | `visualAnchorTaskId` / `visualSelectedTaskIds` をクリア |
@@ -346,6 +350,10 @@ NORMAL モード。
 | `k` | カーソルを前の行へ | ストア内完結 |
 | `gg` | アウトライン先頭行へジャンプ | 連続 2 打鍵で確定（pending key 方式、第 6.2 節） |
 | `G` | アウトライン末尾行へジャンプ | 単打で確定 |
+| `{` | 前の兄弟へ移動（子孫をスキップ） | 同じ actual parent の 1 つ前の兄弟へカーソルを移す。端の兄弟では動かさない。兄弟の判定に `parent_id` が要るため、対象 ID の解決は `flatten-for-dnd.ts` の純粋関数 `findSiblingTaskId` が行い、`OutlineShell` が `setCursor` へ渡す（第 5.2 節） |
+| `}` | 次の兄弟へ移動（子孫をスキップ） | 向きが逆であること以外は `{` と同じ |
+| `C-d` | カーソルを 10 行下へ | `visibleTaskIds` の添字を +10 する。画面の高さは実測せず固定行数とする（予測可能性と実装コストを優先する判断）。Chrome のブックマーク追加と衝突するが `preventDefault` で奪う |
+| `C-u` | カーソルを 10 行上へ | `visibleTaskIds` の添字を -10 する。Chrome のソース表示と衝突するが `preventDefault` で奪う |
 | `x` | 完了 | `completeTask` を呼ぶ。blocked の場合 `TASK_BLOCKED` エラーを受けトースト表示し DAG の原因ノードを点滅させる |
 | `o` | 新規タスク作成（下） | カーソル行の下に同じ actual parent の兄弟として `createTask`。挿入位置は `createTask` が兄弟グループ末尾へ作ったうえで `move_task` RPC(req.md §54) へ委ねる（兄弟の position をずらす更新を 1 トランザクションにまとめるため） |
 | `O` | 新規タスク作成（上） | カーソル行の上に同じ actual parent の兄弟として `createTask`。挿入位置の扱いは `o` と同じ |
@@ -353,6 +361,9 @@ NORMAL モード。
 | `A` | タイトルの行内編集（末尾） | カーソル行のタイトルを行内編集する。キャレットは末尾（第 6.4 節） |
 | `Enter` | 選択行の編集 | フォーカスを `DetailPane` の編集領域へ移す（タイトルの行内編集は `i` / `A` で行う） |
 | `za` | 折りたたみ切替 | ストア内完結。DB アクセスなし |
+| `zo` / `zc` | カーソル行の折りたたみを開く / 閉じる | ストア内完結。`za` と同じく `collapsedTaskIds` の 1 要素の出し入れ |
+| `zR` | すべて展開 | ストア内完結（`collapsedTaskIds` を空集合にするだけ） |
+| `zM` | すべて折りたたむ | 「子を持つ行」の判定に木構造が要るため、対象 ID の算出だけ `OutlineShell` が行い（`collectCollapsibleTaskIds`）、ストアへは ID の集合を渡す。`zR` と置き場所が非対称なのはストアへタスクデータを複製しないため（第 5.2 節） |
 | `J` | 同一 parent 内で 1 つ下へ移動 | `reorderTasks` |
 | `K` | 同一 parent 内で 1 つ上へ移動 | `reorderTasks` |
 | `<` | 親を 1 階層上げる（outdent） | `moveTask` |
@@ -433,7 +444,7 @@ NORMAL の `Enter` は、行にフォーカスがあるときは `DetailPane` �
 前者だけが dispatcher の担当であり、後者は input のローカルハンドラが処理する。
 文脈の違いは `category` が表すため、ヘルプ側の識別子（React の `key`）も `mode` + `category` + `keys` とする。
 
-`gg`（第 6.1 節）と `dd`（第 6.1 節）と `za`（第 6.1 節）は、1 回の `keydown` だけでは確定可否を判定できない（確定事項）。
+`gg`（第 6.1 節）と `dd`（第 6.1 節）と `z` で始まる各キー（`za` / `zo` / `zc` / `zR` / `zM`、第 6.1 節）は、1 回の `keydown` だけでは確定可否を判定できない（確定事項）。
 これらはテーブルの `keys` から構築した prefix tree（trie）で扱う（確定事項）。
 入力トークン列を trie の根から辿り、次の 3 通りに解決する。
 
@@ -496,6 +507,10 @@ blur 時に空文字だった場合は保存できないため取り消し扱い
 
 編集中に別の行がクリックされてカーソルが移動した場合は編集状態を解除する。
 `OutlineShell` がレンダー中の state 調整（`lastCursorTaskId` との比較）で行い、`useEffect` による同期にはしない。
+
+編集中の行が表示行の集合から消えた場合も同じくレンダー中の state 調整で編集状態を解除する（確定事項）。
+`zM` / `zc`（第 6.1 節）による折りたたみや検索の絞り込みは表示行の集合を変えるため、input が unmount されたまま編集状態だけが残りうるためである。
+キー経由でこの状態に入ることはない（編集中はフォーカスが input にあり dispatcher が `isEditableTarget` で素通しする）が、折りたたみボタンのクリックのようにキーボード以外の経路があるため、カーソル移動による解除とは別に表示行の集合とも突き合わせる。
 
 キー入力は input のローカルハンドラで処理し、行や祖先へは伝播させない（`stopPropagation`）。
 行（`OutlineRow`）の `onKeyDown` が `Enter` / `Space` をカーソル選択として拾い `preventDefault` するため、そのままでは入力欄に空白を打てないためである。

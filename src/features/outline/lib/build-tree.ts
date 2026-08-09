@@ -69,6 +69,15 @@ export const buildOutlineTree = (tasks: readonly AppTask[]): OutlineTreeRow[] =>
 };
 
 /**
+ * 子を持つ行 (折りたたみが効く行) の ID を表示順で返す (`z M`, docs/frontend-design.md §6.1)
+ *
+ * 「子を持つか」は deriveVisibleRows の判定と揃えて表示上の親子関係 (effective_parent_id 由来の hasChildren) で見る。
+ * 子を持たない行を折りたたみ集合へ入れても表示は変わらないが、`z M` の後に `z a` を押したときの
+ * トグルの向きが反転して見えるため対象から外す
+ */
+export const collectCollapsibleTaskIds = (rows: readonly OutlineTreeRow[]): string[] => rows.filter((row) => row.hasChildren).map((row) => row.task.id);
+
+/**
  * 折りたたみ (collapsedTaskIds) を反映して可視行を導出する (docs/frontend-design.md §5.1 の za)
  *
  * buildOutlineTree が返す行は sort_path 順 (= 深さ優先の行きがけ順) であるため、

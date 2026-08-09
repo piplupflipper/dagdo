@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeCreatePosition } from "@/features/outline/lib/flatten-for-dnd";
+import { computeCreatePosition, findSiblingTaskId } from "@/features/outline/lib/flatten-for-dnd";
 import type { AppTask } from "@/types/task";
 
 /** 位置計算に効くカラムだけを指定してタスクを作る (残りは計算に関与しない固定値) */
@@ -56,5 +56,38 @@ describe("computeCreatePosition", () => {
     it("カーソル未選択・未知のタスクでは null (兄弟グループ末尾への作成) を返す", () => {
         expect(computeCreatePosition({ tasks, cursorTaskId: null, placement: "below" })).toBeNull();
         expect(computeCreatePosition({ tasks, cursorTaskId: "unknown", placement: "below" })).toBeNull();
+    });
+});
+
+describe("findSiblingTaskId", () => {
+    it("`}` (down) は次の兄弟を返し、間の子孫を飛ばす", () => {
+        // b の子 b1 は a と c の兄弟ではないため、a → c へ飛ぶ
+        expect(findSiblingTaskId({ tasks, taskId: "b", direction: "down" })).toBe("c");
+        expect(findSiblingTaskId({ tasks, taskId: "a", direction: "down" })).toBe("b");
+    });
+
+    it("`{` (up) は前の兄弟を返す", () => {
+        expect(findSiblingTaskId({ tasks, taskId: "c", direction: "up" })).toBe("b");
+    });
+
+    it("兄弟の並びは表示上の添字ではなく position 順で見る", () => {
+        // 配列の並びが position 順と食い違っていても結果は変わらない
+        const shuffled = [task({ id: "c", position: 2 }), task({ id: "a", position: 0 }), task({ id: "b", position: 1 })];
+        expect(findSiblingTaskId({ tasks: shuffled, taskId: "a", direction: "down" })).toBe("b");
+        expect(findSiblingTaskId({ tasks: shuffled, taskId: "c", direction: "up" })).toBe("b");
+    });
+
+    it("兄弟グループの端では null を返す (呼び出し側はカーソルを動かさない)", () => {
+        expect(findSiblingTaskId({ tasks, taskId: "a", direction: "up" })).toBeNull();
+        expect(findSiblingTaskId({ tasks, taskId: "c", direction: "down" })).toBeNull();
+    });
+
+    it("兄弟が 1 件だけの階層ではどちらの向きでも null を返す (親や子へは移らない)", () => {
+        expect(findSiblingTaskId({ tasks, taskId: "b1", direction: "up" })).toBeNull();
+        expect(findSiblingTaskId({ tasks, taskId: "b1", direction: "down" })).toBeNull();
+    });
+
+    it("未知のタスクでは null を返す", () => {
+        expect(findSiblingTaskId({ tasks, taskId: "unknown", direction: "down" })).toBeNull();
     });
 });
