@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseKeySequence } from "@/features/outline/lib/key-sequence";
-import { type KeymapEntry, outlineKeymap } from "@/features/outline/lib/keymap-table";
+import { dispatchableKeymap, type KeymapEntry } from "@/features/outline/lib/keymap-table";
 import { advanceKeySequence, buildKeymapTries, type PendingSequence } from "@/features/outline/lib/keymap-trie";
 import type { OutlineMode } from "@/store/types";
 
@@ -10,9 +10,10 @@ const TIMEOUT_MS = 500;
 /**
  * 待機状態を引き継ぎながら 1 打鍵ずつ流し込むドライバを作る
  *
- * useOutlineKeymap が useRef でやっていることをテスト側で再現したもの
+ * useOutlineKeymap が useRef でやっていることをテスト側で再現したもの。
+ * 既定のテーブルは dispatcher と同じく dispatchableKeymap (ドキュメント専用エントリを除いたもの) とする
  */
-const createPresser = (mode: OutlineMode, entries: readonly KeymapEntry[] = outlineKeymap) => {
+const createPresser = (mode: OutlineMode, entries: readonly KeymapEntry[] = dispatchableKeymap) => {
     const tries = buildKeymapTries(entries);
     const state: { pending: PendingSequence | null } = { pending: null };
     return (token: string, timestampMs = 0) => {
@@ -32,7 +33,7 @@ const entry = (overrides: Partial<KeymapEntry>): KeymapEntry => ({
 
 describe("buildKeymapTries", () => {
     it("実際の keymap テーブルを例外なく構築できる", () => {
-        expect(() => buildKeymapTries(outlineKeymap)).not.toThrow();
+        expect(() => buildKeymapTries(dispatchableKeymap)).not.toThrow();
     });
 
     it("空のキーシーケンスを拒否する", () => {
@@ -115,8 +116,8 @@ describe("advanceKeySequence", () => {
 });
 
 describe("keymap テーブルと dispatcher の整合性", () => {
-    it("テーブルの全エントリが自身のキーシーケンスで到達できる", () => {
-        for (const target of outlineKeymap) {
+    it("dispatcher が解決する全エントリが自身のキーシーケンスで到達できる", () => {
+        for (const target of dispatchableKeymap) {
             const press = createPresser(target.mode);
             const tokens = parseKeySequence(target.keys);
             const resolutions = tokens.map((token, index) => press(token, index * 10));
@@ -132,7 +133,7 @@ describe("keymap テーブルと dispatcher の整合性", () => {
 
     it("テーブルに無いキーはどのモードでも処理されない", () => {
         const modes: readonly OutlineMode[] = ["NORMAL", "VISUAL", "SEARCH"];
-        const registered = new Set(outlineKeymap.map((target) => `${target.mode} ${parseKeySequence(target.keys)[0]}`));
+        const registered = new Set(dispatchableKeymap.map((target) => `${target.mode} ${parseKeySequence(target.keys)[0]}`));
         for (const mode of modes) {
             for (const token of ["q", "w", "e", "r", "t", "y", "u", "i", "p", "Tab", "Backspace", "C-r"]) {
                 if (registered.has(`${mode} ${token}`)) {
