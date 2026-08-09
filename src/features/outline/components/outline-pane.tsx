@@ -23,6 +23,17 @@ export type OutlinePaneProps = {
 };
 
 /**
+ * DndContext の固定 ID
+ *
+ * dnd-kit は id 未指定だとモジュールスコープのカウンタから aria-describedby 用 ID を採番するため、
+ * SSR とハイドレーション時の CSR とで採番結果がずれて hydration error になる。
+ * id を渡すとその値がそのまま aria-describedby に使われ、サーバー/クライアントで一致する
+ * (@dnd-kit/utilities の useUniqueId は第 2 引数が truthy ならそれを返す)。
+ * DndContext はこのページに 1 つだけなので固定文字列で衝突しない
+ */
+const DND_CONTEXT_ID = "outline-dnd";
+
+/**
  * 左ペイン全体 (docs/frontend-design.md §7.1)
  *
  * DependencyRail (ガター) + OutlineRow の一覧を表示し、dnd-kit の DndContext/SortableContext を構成する。
@@ -78,7 +89,7 @@ export const OutlinePane = ({
     return (
         <div ref={containerRef} className="flex min-h-0 flex-1 overflow-y-auto bg-bg" data-role="outline-scroll">
             <DependencyRail containerRef={containerRef} rowMapRef={rowMapRef} visibleTaskIds={visibleTaskIds} dependencies={dependencies} tasksById={tasksById} cursorTaskId={cursorTaskId} />
-            <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+            <DndContext id={DND_CONTEXT_ID} sensors={sensors} onDragEnd={handleDragEnd}>
                 <SortableContext items={dndItems.map((item) => item.id)} strategy={verticalListSortingStrategy}>
                     <div className="min-w-0 flex-1 py-2 pr-3.5 pl-2.5" role="listbox" aria-label="タスク一覧" data-role="outline-tree">
                         {visibleRows.map((row) => (
