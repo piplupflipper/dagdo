@@ -1,7 +1,9 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { JSX, KeyboardEvent } from "react";
+import { type JSX, type KeyboardEvent, useRef } from "react";
+import { InlineTitleEditor } from "@/features/outline/components/inline-title-editor";
 import type { OutlineTreeRow } from "@/features/outline/lib/build-tree";
+import type { InlineTitleCaret } from "@/features/outline/lib/inline-title-edit";
 import type { AppTask } from "@/types/task";
 
 export type OutlineRowProps = {
@@ -10,9 +12,15 @@ export type OutlineRowProps = {
     isCursor: boolean;
     isVisualSelected: boolean;
     isFlashing: boolean;
+    /** この行を行内編集中ならキャレット位置、編集中でなければ null (docs/frontend-design.md §6.1) */
+    inlineEditCaret: InlineTitleCaret | null;
     onSelectCursor: (taskId: string) => void;
     onToggleCollapse: (taskId: string) => void;
     onToggleDone: (task: AppTask) => void;
+    /** 行内編集の確定。トリム済みで空でないタイトルが渡る */
+    onCommitInlineTitle: (taskId: string, title: string) => void;
+    /** 行内編集の取り消し */
+    onCancelInlineTitle: () => void;
 };
 
 const INDENT_PX = 20;
@@ -38,9 +46,23 @@ const isOverdue = (task: AppTask): boolean => {
  * dnd-kit の useSortable をこの行自身で呼び、ドラッグハンドルにのみ listeners を割り当てる
  * (行全体を click でカーソル選択に使うため、ドラッグ開始点をハンドルに限定する)
  */
-export const OutlineRow = ({ row, registerRow, isCursor, isVisualSelected, isFlashing, onSelectCursor, onToggleCollapse, onToggleDone }: OutlineRowProps): JSX.Element => {
+export const OutlineRow = ({
+    row,
+    registerRow,
+    isCursor,
+    isVisualSelected,
+    isFlashing,
+    inlineEditCaret,
+    onSelectCursor,
+    onToggleCollapse,
+    onToggleDone,
+    onCommitInlineTitle,
+    onCancelInlineTitle,
+}: OutlineRowProps): JSX.Element => {
     const { task, depth, hasChildren } = row;
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
+    /** 行内編集を終えたときのフォーカス戻し先。tabIndex={-1} を持つのはこの要素 */
+    const optionRef = useRef<HTMLDivElement>(null);
 
     const isDone = task.completed_at !== null;
     const overdue = isOverdue(task);
@@ -66,6 +88,7 @@ export const OutlineRow = ({ row, registerRow, isCursor, isVisualSelected, isFla
             data-cursor={isCursor ? "true" : undefined}
         >
             <div
+                ref={optionRef}
                 role="option"
                 aria-selected={isCursor}
                 tabIndex={-1}
@@ -119,7 +142,17 @@ export const OutlineRow = ({ row, registerRow, isCursor, isVisualSelected, isFla
                 </button>
 
                 {/* モバイル幅では固定幅だと行が画面幅を超えて横スクロールを生むため、縮小・省略を許す。md 以上は従来どおり縮まない */}
-                <span className={`min-w-0 flex-1 truncate md:min-w-[10em] md:flex-none ${isDone ? "text-text-dim line-through" : "text-text"}`}>{task.title}</span>
+                {inlineEditCaret !== null ? (
+                    <InlineTitleEditor
+                        initialTitle={task.title}
+                        caret={inlineEditCaret}
+                        onCommit={(title) => onCommitInlineTitle(task.id, title)}
+                        onCancel={onCancelInlineTitle}
+                        focusRow={() => optionRef.current?.focus()}
+                    />
+                ) : (
+                    <span className={`min-w-0 flex-1 truncate md:min-w-[10em] md:flex-none ${isDone ? "text-text-dim line-through" : "text-text"}`}>{task.title}</span>
+                )}
 
                 <span className="ml-auto flex flex-shrink-0 flex-wrap items-center justify-end gap-1">
                     {isDone ? (

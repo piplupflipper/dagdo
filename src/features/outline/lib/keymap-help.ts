@@ -19,7 +19,13 @@ type KeymapHelpToken = {
 
 /** ヘルプの 1 行。テーブルの 1 エントリに対応する */
 type KeymapHelpItem = {
-    /** React の key に使う識別子。`mode` + `keys` はテーブル内で一意 (keymap-trie.ts が重複を弾く) */
+    /**
+     * React の key に使う識別子
+     *
+     * `mode` + `keys` だけでは一意にならない。同じキーが文脈違いで 2 度現れることがあるためで、
+     * 例えば NORMAL の `Enter` は `編集` (詳細ペインへ移る) と `行内編集` (編集を確定) の両方に登録されている。
+     * 文脈は `category` が表すため (keymap-table.ts の KeymapCategory)、識別子にも含める
+     */
     id: string;
     tokens: KeymapHelpToken[];
     description: string;
@@ -74,7 +80,7 @@ export const buildKeymapHelpSections = (entries: readonly KeymapEntry[]): Keymap
             section.groups.push(group);
         }
 
-        const id = `${entry.mode} ${entry.keys}`;
+        const id = `${entry.mode} ${entry.category} ${entry.keys}`;
         group.items.push({
             id,
             tokens: parseKeySequence(entry.keys).map((token, index) => ({ id: `${id} ${index}`, label: formatKeyToken(token) })),

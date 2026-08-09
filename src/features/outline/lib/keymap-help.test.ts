@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildKeymapHelpSections, formatKeyToken, HELP_CLOSE_KEYS } from "@/features/outline/lib/keymap-help";
-import { type KeymapEntry, outlineKeymap } from "@/features/outline/lib/keymap-table";
+import { dispatchableKeymap, type KeymapEntry, outlineKeymap } from "@/features/outline/lib/keymap-table";
 
 /**
  * グルーピングの検証用テーブル
@@ -64,8 +64,10 @@ describe("HELP_CLOSE_KEYS", () => {
         expect([...HELP_CLOSE_KEYS]).toEqual(["q", "Escape"]);
     });
 
-    it("閉じるキーは keymap テーブルに登録しない (dispatcher のガードが処理するため)", () => {
-        const normalKeys = outlineKeymap.filter((entry) => entry.mode === "NORMAL").map((entry) => entry.keys);
+    // 行内編集中の Esc はドキュメント専用エントリとして NORMAL に登録されているため、
+    // 判定の対象は dispatcher が実際に解決するエントリ (dispatchableKeymap) に限る
+    it("閉じるキーは dispatcher の解決対象に登録しない (ガードが処理するため)", () => {
+        const normalKeys = dispatchableKeymap.filter((entry) => entry.mode === "NORMAL").map((entry) => entry.keys);
         for (const key of HELP_CLOSE_KEYS) {
             expect(normalKeys, key).not.toContain(key);
         }

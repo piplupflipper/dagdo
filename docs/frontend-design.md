@@ -347,8 +347,11 @@ NORMAL モード。
 | `gg` | アウトライン先頭行へジャンプ | 連続 2 打鍵で確定（pending key 方式、第 6.2 節） |
 | `G` | アウトライン末尾行へジャンプ | 単打で確定 |
 | `x` | 完了 | `completeTask` を呼ぶ。blocked の場合 `TASK_BLOCKED` エラーを受けトースト表示し DAG の原因ノードを点滅させる |
-| `o` | 新規タスク作成 | カーソル行の下に同じ actual parent の兄弟として `createTask` |
-| `Enter` | 選択行の編集 | フォーカスを `DetailPane` の編集領域へ移す（インライン編集は行わない） |
+| `o` | 新規タスク作成（下） | カーソル行の下に同じ actual parent の兄弟として `createTask`。挿入位置は `createTask` が兄弟グループ末尾へ作ったうえで `move_task` RPC(req.md §54) へ委ねる（兄弟の position をずらす更新を 1 トランザクションにまとめるため） |
+| `O` | 新規タスク作成（上） | カーソル行の上に同じ actual parent の兄弟として `createTask`。挿入位置の扱いは `o` と同じ |
+| `i` | タイトルの行内編集（先頭） | カーソル行のタイトルを行内編集する。キャレットは先頭（第 6.4 節） |
+| `A` | タイトルの行内編集（末尾） | カーソル行のタイトルを行内編集する。キャレットは末尾（第 6.4 節） |
+| `Enter` | 選択行の編集 | フォーカスを `DetailPane` の編集領域へ移す（タイトルの行内編集は `i` / `A` で行う） |
 | `za` | 折りたたみ切替 | ストア内完結。DB アクセスなし |
 | `J` | 同一 parent 内で 1 つ下へ移動 | `reorderTasks` |
 | `K` | 同一 parent 内で 1 つ上へ移動 | `reorderTasks` |
@@ -412,7 +415,7 @@ const useOutlineKeymap = (): void => {
 type KeymapEntry = {
     keys: string; // スペース区切りのキーシーケンス表現（"j" / "g g" / "z a" / "C-d"）
     mode: OutlineMode;
-    category: KeymapCategory; // ヘルプでのグルーピング用（移動 / 編集 / 構造変更 / 折りたたみ / モード / ヘルプ）
+    category: KeymapCategory; // ヘルプでのグルーピング用（移動 / 編集 / 行内編集 / 構造変更 / 折りたたみ / モード / ヘルプ）
     description: string; // ヘルプ表示用の説明
     run?: (context: KeymapContext) => void; // 省略時はヘルプにのみ表示する
 };
@@ -422,6 +425,13 @@ type KeymapEntry = {
 修飾キーは基底キーの前へ `C-`（Control）/ `A-`（Alt）/ `M-`（Meta）を付ける。
 Shift は接頭辞にしない（`J` や `<` のように `event.key` へ既に反映されているため）。
 `run` を任意にしているのは、行内編集中の `Esc` / `Enter` のように「コンポーネント側のローカルハンドラが処理するが、ヘルプには載せたいキー」を同じテーブルへ含めるためである。
+
+`run` を持たないエントリ（ドキュメント専用エントリ）は trie に載せない（確定事項）。
+dispatcher が読むのは `dispatchableKeymap`（`outlineKeymap` から `run` を持つものだけを抜いた派生）である。
+除く理由は、同じ `mode` + `keys` が文脈違いで 2 度現れうるためである。
+NORMAL の `Enter` は、行にフォーカスがあるときは `DetailPane` へ移り（第 6.1 節）、行内編集中は編集を確定する（第 6.4 節）。
+前者だけが dispatcher の担当であり、後者は input のローカルハンドラが処理する。
+文脈の違いは `category` が表すため、ヘルプ側の識別子（React の `key`）も `mode` + `category` + `keys` とする。
 
 `gg`（第 6.1 節）と `dd`（第 6.1 節）と `za`（第 6.1 節）は、1 回の `keydown` だけでは確定可否を判定できない（確定事項）。
 これらはテーブルの `keys` から構築した prefix tree（trie）で扱う（確定事項）。
@@ -461,6 +471,35 @@ trie の構築（`buildKeymapTries`）と 1 打鍵ぶんの待機状態遷移（
 `role="dialog"` と `aria-modal="true"` で「背面は不活性」と宣言している以上、`Tab` で背面へ抜けられる状態は宣言と矛盾するためである。
 加えて抜けた先が `textarea` の場合は `isEditableTarget`（第 6.2 節）が dispatcher の手前で return するため、`q` / `Esc` で閉じられなくなる実害がある。
 `MobileDetailSheet` が閉じている間に使っている `inert` と同じ道具で揃える。
+
+### 6.4 タイトルの行内編集
+
+`i` / `A`（第 6.1 節）はカーソル行のタイトルを行内編集する。
+キャレット位置は vim に倣い `i` が先頭、`A` が末尾とする（`DetailPane` のタイトル編集が全選択にしているのとは使い分ける）。
+確定は `Enter` または blur、取り消しは `Esc` とする。
+`Enter` による確定は NORMAL に戻すだけとし、`DetailPane` へは連鎖させない（移りたい場合は改めて `Enter` を押す）。
+空文字（トリム後）は DB 制約 `tasks_title_not_blank` の CHECK 違反になり `TaskErrorCode` へ変換できないため、送信前にクライアント側で弾いてインラインにエラーを出す（第 8.2 節の `DetailPane` と同じ理由）。
+blur 時に空文字だった場合は保存できないため取り消し扱いとし、元のタイトルへ戻す。
+確定時に値が変わっていなければ `updateTask` を呼ばずに編集だけを畳む（blur 確定で無駄な Server Action が飛ぶのを防ぐ）。
+確定した新しいタイトルは `useOptimistic`（第 5.2 節）でも重ねる。revalidate が届くまでの間、確定直後の行が編集前のタイトルへ一瞬戻って見えるのを防ぐためである。
+
+編集状態は `OutlineShell` のローカル state が `{ taskId, caret }`（null 許容）という 1 個の値として持つ（確定事項）。
+`OutlineMode` に `INSERT` を足さず、Zustand ストアにも置かない。
+モードなしで成立するのは、グローバル keymap の抑止を `isEditableTarget`（第 6.2 節）が DOM のフォーカス先で行っているためである。
+編集中はフォーカスが input にあるので `j` / `k` は発火せず、「カーソルは動いたが編集対象は元の行のまま」という同期のずれが構造的に起きない。
+第二の状態機械（`editingMode` 等）は作らない。将来 `cc`（タイトル全体を置き換える）を足す場合も `caret` の値を増やすだけに留める。
+
+フォーカス制御は次の 2 点を守る（確定事項）。これを誤るとフォーカスが `body` へ落ち、キー入力が一切効かなくなる。
+
+- 編集開始時は callback ref で input へ即座にフォーカスし、`caret` に応じたキャレット位置を `setSelectionRange` で設定する。`useEffect` にしないのは、編集状態が立ってから実際にフォーカスが移るまでの隙間に `j` が滑り込むのを防ぐためである
+- 編集終了時（確定・取り消しの両方）は、編集状態を畳む前に行の要素（`tabIndex={-1}` を持つ `role="option"`）へ明示的にフォーカスを戻す。ただし blur 由来の終了では既に別の要素へフォーカスが移っているため戻さない
+
+編集中に別の行がクリックされてカーソルが移動した場合は編集状態を解除する。
+`OutlineShell` がレンダー中の state 調整（`lastCursorTaskId` との比較）で行い、`useEffect` による同期にはしない。
+
+キー入力は input のローカルハンドラで処理し、行や祖先へは伝播させない（`stopPropagation`）。
+行（`OutlineRow`）の `onKeyDown` が `Enter` / `Space` をカーソル選択として拾い `preventDefault` するため、そのままでは入力欄に空白を打てないためである。
+IME 変換確定の `Enter` / `Esc` は `isComposing` を見て編集の確定・取り消しと取り違えない（`SearchOverlay` と同じ扱い）。
 
 ---
 

@@ -23,6 +23,9 @@ export type ReparentResult = {
     newPosition: number;
 };
 
+/** カーソル行を基準にした新規タスクの作成位置 (`o` は below、`O` は above, docs/frontend-design.md §6.1) */
+export type SiblingPlacement = "above" | "below";
+
 const actualDepthOf = (taskId: string, byId: ReadonlyMap<string, AppTask>, guard: number): number => {
     // 削除済み祖先を挟むと actual parent_id チェーンが byId 上で途切れることがある。
     // その場合はそこで打ち切り、途切れた地点を暫定的な深さ 0 として扱う (V1 の割り切り)
@@ -116,6 +119,35 @@ export const computeOutdent = ({ tasks, taskId }: { tasks: readonly AppTask[]; t
         return null;
     }
     return { newParentId: parent.parent_id, newPosition: parent.position + 1 };
+};
+
+/**
+ * カーソル行の上/下へ新規タスクを作るときの position を計算する純粋関数 (`o`/`O`, docs/frontend-design.md §6.1)
+ *
+ * カーソル行の position そのものを基準にし、`above` はその値、`below` は +1 を返す。
+ * 表示されている兄弟の並び順 (添字) を基準にしてはならない。`app_tasks` View は論理削除済みを除外するため
+ * (supabase/migrations/20260808000003_app_tasks_view.sql)、同じ兄弟グループに論理削除済みタスクが残っていると
+ * 表示上の添字と DB の position がずれ、`o` で作ったタスクがカーソル行の手前に入る
+ *
+ * position は削除済みも含めた兄弟グループ内で 0 から連続する。作成が末尾 (`count`) へ採番し (create-task.ts)、
+ * move_task が ±1 のシフトで連続性を保ち、reorder_tasks は削除済みを含む兄弟グループ全体を 0..n-1 で振り直す
+ * (対象が欠けていれば INVALID_PARENT で失敗する) ためである。
+ * したがって `position + 1` が作成時の `count` を超えることはない。
+ *
+ * `app_tasks` View の生成型では position は nullable だが、AppTask が non-null へ narrowing している (src/types/task.ts) ため
+ * ここで null を扱う必要はない
+ *
+ * @returns カーソル未選択、または対象タスクが見つからない場合は null (= 兄弟グループの末尾へ作成する)
+ */
+export const computeCreatePosition = ({ tasks, cursorTaskId, placement }: { tasks: readonly AppTask[]; cursorTaskId: string | null; placement: SiblingPlacement }): number | null => {
+    if (cursorTaskId === null) {
+        return null;
+    }
+    const target = tasks.find((task) => task.id === cursorTaskId);
+    if (target === undefined) {
+        return null;
+    }
+    return placement === "above" ? target.position : target.position + 1;
 };
 
 /**

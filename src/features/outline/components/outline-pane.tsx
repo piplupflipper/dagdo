@@ -6,6 +6,7 @@ import { OutlineRow } from "@/features/outline/components/outline-row";
 import { useRowRefs } from "@/features/outline/hooks/use-row-refs";
 import type { OutlineTreeRow } from "@/features/outline/lib/build-tree";
 import { computeDropResult, flattenForDnd, type ReparentResult, type SiblingReorderResult } from "@/features/outline/lib/flatten-for-dnd";
+import type { InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
 import type { AppTask, TaskDependency } from "@/types/task";
 
 export type OutlinePaneProps = {
@@ -15,11 +16,15 @@ export type OutlinePaneProps = {
     cursorTaskId: string | null;
     visualSelectedTaskIds: ReadonlySet<string>;
     flashTaskId: string | null;
+    /** 行内編集中のタスクとキャレット位置。編集していなければ null (docs/frontend-design.md §6.1) */
+    inlineTitleEdit: InlineTitleEdit | null;
     onSelectCursor: (taskId: string) => void;
     onToggleCollapse: (taskId: string) => void;
     onToggleDone: (task: AppTask) => void;
     onReorder: (result: SiblingReorderResult) => void;
     onReparent: (taskId: string, result: ReparentResult) => void;
+    onCommitInlineTitle: (taskId: string, title: string) => void;
+    onCancelInlineTitle: () => void;
 };
 
 /**
@@ -48,11 +53,14 @@ export const OutlinePane = ({
     cursorTaskId,
     visualSelectedTaskIds,
     flashTaskId,
+    inlineTitleEdit,
     onSelectCursor,
     onToggleCollapse,
     onToggleDone,
     onReorder,
     onReparent,
+    onCommitInlineTitle,
+    onCancelInlineTitle,
 }: OutlinePaneProps): JSX.Element => {
     const containerRef = useRef<HTMLDivElement>(null);
     const { registerRow, rowMapRef } = useRowRefs();
@@ -100,9 +108,12 @@ export const OutlinePane = ({
                                 isCursor={row.task.id === cursorTaskId}
                                 isVisualSelected={visualSelectedTaskIds.has(row.task.id)}
                                 isFlashing={row.task.id === flashTaskId}
+                                inlineEditCaret={inlineTitleEdit?.taskId === row.task.id ? inlineTitleEdit.caret : null}
                                 onSelectCursor={onSelectCursor}
                                 onToggleCollapse={onToggleCollapse}
                                 onToggleDone={onToggleDone}
+                                onCommitInlineTitle={onCommitInlineTitle}
+                                onCancelInlineTitle={onCancelInlineTitle}
                             />
                         ))}
                     </div>
