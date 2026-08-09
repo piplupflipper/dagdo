@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { keyEventToToken } from "@/features/outline/lib/key-sequence";
 import { HELP_CLOSE_KEYS } from "@/features/outline/lib/keymap-help";
-import { type OutlineKeymapHandlers, outlineKeymap } from "@/features/outline/lib/keymap-table";
+import { dispatchableKeymap, type OutlineKeymapHandlers } from "@/features/outline/lib/keymap-table";
 import { advanceKeySequence, buildKeymapTries, type PendingSequence } from "@/features/outline/lib/keymap-trie";
 import { useOutlineStore } from "@/store/outline-store";
 
@@ -12,9 +12,10 @@ const PENDING_KEY_TIMEOUT_MS = 500;
  * モードごとの prefix tree
  *
  * テーブルは静的なのでモジュール読み込み時に 1 度だけ構築する。
- * 空シーケンスや重複エントリがあればここで例外になり、開発時に即座に気付ける
+ * 空シーケンスや重複エントリがあればここで例外になり、開発時に即座に気付ける。
+ * 載せるのはドキュメント専用エントリを除いた dispatchableKeymap である (keymap-table.ts)
  */
-const keymapTries = buildKeymapTries(outlineKeymap);
+const keymapTries = buildKeymapTries(dispatchableKeymap);
 
 /** input / textarea / contenteditable にフォーカスがある間はグローバル keymap を無効化する (docs/frontend-design.md §6.2) */
 const isEditableTarget = (target: EventTarget | null): boolean => {
@@ -94,7 +95,7 @@ export const useOutlineKeymap = ({ handlers, isHelpOpen }: UseOutlineKeymapParam
             }
             const { run } = resolution.entry;
             if (run === undefined) {
-                // ヘルプ表示専用のエントリ。実処理はコンポーネント側のローカルハンドラが行う
+                // trie には dispatchableKeymap しか載せていないため到達しない。型を絞るためだけの分岐
                 return;
             }
             run({ handlers, store: useOutlineStore.getState() });

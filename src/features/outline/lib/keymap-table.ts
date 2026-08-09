@@ -1,10 +1,13 @@
+import type { SiblingPlacement } from "@/features/outline/lib/flatten-for-dnd";
+import type { InlineTitleCaret } from "@/features/outline/lib/inline-title-edit";
 import type { useOutlineStore } from "@/store/outline-store";
 import type { OutlineMode } from "@/store/types";
 
 /**
  * `OutlineShell` が注入する副作用 (docs/frontend-design.md §6.1)
  *
- * DB アクセスを伴う操作 (x/o/J/K/</>/dd/Enter) と、ストアに置かない UI ローカル state の操作 (ヘルプ開閉) を持つ。
+ * DB アクセスを伴う操作 (x/o/O/J/K/</>/dd/Enter) と、ストアに置かない UI ローカル state の操作
+ * (ヘルプ開閉・行内編集の開始) を持つ。
  * モード遷移のようなストア内完結の操作 (j/k/gg/G/za/V/Esc 等) は keymap エントリの `run` が
  * `context.store` を直接叩くため、ここには含まれない
  */
@@ -13,8 +16,10 @@ export type OutlineKeymapHandlers = {
     completeCursor: () => void;
     /** VISUAL の `x`。選択範囲の各タスクへ順に completeTask する */
     completeSelection: () => void;
-    /** `o`。カーソル行の下に同じ actual parent の兄弟として createTask する */
-    createBelowCursor: () => void;
+    /** `o`/`O`。カーソル行の下/上に同じ actual parent の兄弟として createTask する */
+    createSibling: (placement: SiblingPlacement) => void;
+    /** `i`/`A`。カーソル行のタイトルの行内編集を開始する (キャレット位置は先頭/末尾) */
+    startInlineTitleEdit: (caret: InlineTitleCaret) => void;
     /** `Enter`。DetailPane の編集領域へフォーカスを移す */
     focusDetailEditor: () => void;
     /** `J`/`K`。同一 parent 内で 1 つ上/下へ reorderTasks する */
@@ -45,8 +50,14 @@ type KeymapContext = {
     store: ReturnType<typeof useOutlineStore.getState>;
 };
 
-/** ヘルプオーバーレイでのグルーピング単位 (lib/keymap-help.ts) */
-export type KeymapCategory = "移動" | "編集" | "構造変更" | "折りたたみ" | "モード" | "ヘルプ";
+/**
+ * ヘルプオーバーレイでのグルーピング単位 (lib/keymap-help.ts)
+ *
+ * `行内編集` は「行内編集中だけ効くキー」という文脈を表すためのカテゴリである。
+ * 行内編集はモードではない (OutlineMode は NORMAL/VISUAL/SEARCH の 3 値を維持する) ため
+ * `mode` 軸では文脈を表現できず、ヘルプ表示専用の軸である `category` に持たせている
+ */
+export type KeymapCategory = "移動" | "編集" | "行内編集" | "構造変更" | "折りたたみ" | "モード" | "ヘルプ";
 
 /**
  * keymap の 1 エントリ。キーの一覧・説明・動作の単一の正 (docs/frontend-design.md §6.1)
@@ -63,7 +74,7 @@ export type KeymapEntry = {
     /**
      * キー確定時の動作
      *
-     * 省略した場合、dispatcher は preventDefault せず何もしない。
+     * 省略したエントリ (ドキュメント専用エントリ) は dispatcher の解決対象に含めず、ヘルプにのみ表示する。
      * 「コンポーネント側のローカルハンドラが処理するが、ヘルプには載せたいキー」を表現するために任意としている
      */
     run?: (context: KeymapContext) => void;
@@ -83,9 +94,19 @@ export const outlineKeymap: readonly KeymapEntry[] = [
 
     // NORMAL: 編集
     { keys: "x", mode: "NORMAL", category: "編集", description: "カーソル行を完了", run: ({ handlers }) => handlers.completeCursor() },
-    { keys: "o", mode: "NORMAL", category: "編集", description: "カーソル行の下に新規タスクを作成", run: ({ handlers }) => handlers.createBelowCursor() },
+    { keys: "o", mode: "NORMAL", category: "編集", description: "カーソル行の下に新規タスクを作成", run: ({ handlers }) => handlers.createSibling("below") },
+    { keys: "O", mode: "NORMAL", category: "編集", description: "カーソル行の上に新規タスクを作成", run: ({ handlers }) => handlers.createSibling("above") },
     { keys: "Enter", mode: "NORMAL", category: "編集", description: "詳細ペインの編集領域へフォーカスを移す", run: ({ handlers }) => handlers.focusDetailEditor() },
     { keys: "d d", mode: "NORMAL", category: "編集", description: "カーソル行をゴミ箱へ移動", run: ({ handlers }) => handlers.softDeleteCursor() },
+
+    // NORMAL: 行内編集
+    // Enter / Escape は InlineTitleEditor のローカルハンドラが処理するためのドキュメント専用エントリ (run なし)。
+    // 編集中はフォーカスが input にあり、dispatcher は isEditableTarget で手前から素通しするため、
+    // ここに run を持たせても呼ばれない
+    { keys: "i", mode: "NORMAL", category: "行内編集", description: "カーソル行のタイトルを行内編集 (キャレットは先頭)", run: ({ handlers }) => handlers.startInlineTitleEdit("start") },
+    { keys: "A", mode: "NORMAL", category: "行内編集", description: "カーソル行のタイトルを行内編集 (キャレットは末尾)", run: ({ handlers }) => handlers.startInlineTitleEdit("end") },
+    { keys: "Enter", mode: "NORMAL", category: "行内編集", description: "行内編集を確定 (詳細ペインへは移らない)" },
+    { keys: "Escape", mode: "NORMAL", category: "行内編集", description: "行内編集を取り消す" },
 
     // NORMAL: 構造変更
     { keys: "J", mode: "NORMAL", category: "構造変更", description: "同一階層で 1 つ下へ移動", run: ({ handlers }) => handlers.moveCursorSibling("down") },
@@ -125,3 +146,13 @@ export const outlineKeymap: readonly KeymapEntry[] = [
     // フォーカスが外れているような想定外の状態に備えた保険として Esc のみ登録する
     { keys: "Escape", mode: "SEARCH", category: "モード", description: "クエリを破棄して NORMAL へ戻る", run: ({ store }) => store.cancelSearch() },
 ];
+
+/**
+ * dispatcher が解決の対象にするエントリ (`run` を持つもの)
+ *
+ * ドキュメント専用エントリを除くのは、同じ `mode` + `keys` で実行されるエントリと共存しうるためである。
+ * 例えば NORMAL の `Enter` は、行にフォーカスがあるときは詳細ペインへ移り、行内編集中は編集を確定する。
+ * 前者だけが dispatcher の担当であり、後者は input のローカルハンドラが処理する。
+ * この 2 つは文脈が異なるだけで同じ `mode` に属するため、trie (keymap-trie.ts) には前者のみを載せる
+ */
+export const dispatchableKeymap: readonly KeymapEntry[] = outlineKeymap.filter((entry) => entry.run !== undefined);

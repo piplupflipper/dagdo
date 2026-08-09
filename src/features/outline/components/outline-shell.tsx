@@ -7,7 +7,16 @@ import { OutlinePane } from "@/features/outline/components/outline-pane";
 import { StatusLine } from "@/features/outline/components/status-line";
 import { useOutlineKeymap } from "@/features/outline/hooks/use-outline-keymap";
 import { buildOutlineTree, deriveVisibleRows } from "@/features/outline/lib/build-tree";
-import { computeIndent, computeOutdent, computeSiblingSwap, type ReparentResult, type SiblingReorderResult } from "@/features/outline/lib/flatten-for-dnd";
+import {
+    computeCreatePosition,
+    computeIndent,
+    computeOutdent,
+    computeSiblingSwap,
+    type ReparentResult,
+    type SiblingPlacement,
+    type SiblingReorderResult,
+} from "@/features/outline/lib/flatten-for-dnd";
+import type { InlineTitleCaret, InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
 import { SearchOverlay } from "@/features/search/components/search-overlay";
 import { filterTasks } from "@/features/search/lib/filter-tasks";
 import { completeTask } from "@/features/task/actions/complete-task";
@@ -16,6 +25,7 @@ import { moveTask } from "@/features/task/actions/move-task";
 import { reopenTask } from "@/features/task/actions/reopen-task";
 import { reorderTasks } from "@/features/task/actions/reorder-tasks";
 import { softDeleteTask } from "@/features/task/actions/soft-delete-task";
+import { updateTask } from "@/features/task/actions/update-task";
 import type { ActionResult, TaskErrorCode } from "@/features/task/lib/action-result";
 import { DetailPane, type DetailPaneHandle } from "@/features/task-detail/components/detail-pane";
 import { MobileDetailSheet } from "@/features/task-detail/components/mobile-detail-sheet";
@@ -28,21 +38,33 @@ export type OutlineShellProps = {
     initialDependencies: TaskDependency[];
 };
 
-type OptimisticAction = { type: "complete"; taskId: string } | { type: "reopen"; taskId: string };
+type OptimisticAction = { type: "complete"; taskId: string } | { type: "reopen"; taskId: string } | { type: "updateTitle"; taskId: string; title: string };
+
+/** 対象タスク 1 件へ楽観適用する差分を求める */
+const optimisticPatch = (task: AppTask, action: OptimisticAction): AppTask => {
+    switch (action.type) {
+        case "complete":
+            return { ...task, completed_at: new Date().toISOString() };
+        case "reopen":
+            return { ...task, completed_at: null };
+        case "updateTitle":
+            return { ...task, title: action.title };
+    }
+};
 
 /**
  * 楽観的更新のオーバーレイ計算 (docs/frontend-design.md §5.3, §8.2)
  *
  * completeTask 楽観適用時のみ、そのタスクに依存する他タスクの is_blocked を暫定 false にする例外を持つ。
- * この暫定値は revalidate 完了後にサーバー由来の値へ必ず置き換わり、正とはしない
+ * この暫定値は revalidate 完了後にサーバー由来の値へ必ず置き換わり、正とはしない。
+ * 行内編集の確定 (updateTitle) を含めるのは、確定直後に編集前のタイトルへ一瞬戻って見えるのを防ぐため
  */
 const applyOptimisticOverlay = (tasks: readonly AppTask[], dependencies: readonly TaskDependency[], action: OptimisticAction): AppTask[] => {
-    const nowIso = new Date().toISOString();
     const dependentTaskIds = action.type === "complete" ? new Set(dependencies.filter((dependency) => dependency.depends_on_task_id === action.taskId).map((dependency) => dependency.task_id)) : null;
 
     return tasks.map((task) => {
         if (task.id === action.taskId) {
-            return action.type === "complete" ? { ...task, completed_at: nowIso } : { ...task, completed_at: null };
+            return optimisticPatch(task, action);
         }
         if (dependentTaskIds?.has(task.id) && task.is_blocked) {
             return { ...task, is_blocked: false };
@@ -82,7 +104,7 @@ const findBlockingCause = (taskId: string, tasksById: ReadonlyMap<string, AppTas
  * アウトライナー本体のクライアント境界コンポーネント (docs/frontend-design.md §7.1)
  *
  * これより下の features/outline/task-detail/dag/search 配下のコンポーネントは "use client" を再宣言しない。
- * タスクデータは props (RSC 由来) を正とし、useOptimistic で complete/reopen 操作のみをオーバーレイする (docs/frontend-design.md §5.2)
+ * タスクデータは props (RSC 由来) を正とし、useOptimistic で complete/reopen とタイトルの行内編集の確定だけをオーバーレイする (docs/frontend-design.md §5.2)
  */
 export const OutlineShell = ({ userId, initialTasks, initialDependencies }: OutlineShellProps): JSX.Element => {
     // Server Action はセッション (Cookie) から user を解決するため props としては未使用。
@@ -101,6 +123,14 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
      * UI ローカルの表示状態としてここで持つ (Zustand ストアにも置かない)
      */
     const [isHelpOpen, setIsHelpOpen] = useState(false);
+    /**
+     * `i` / `A` によるタイトルの行内編集の状態 (docs/frontend-design.md §6.1)
+     *
+     * ヘルプ開閉と同じく `OutlineMode` にもストアにも持たせず、ここで 1 個の値として持つ。
+     * 編集中はフォーカスが input にあり、dispatcher が `isEditableTarget` で手前から素通しするため、
+     * モードを増やさなくても `j` / `k` でカーソルだけが動くことはない (lib/inline-title-edit.ts)
+     */
+    const [inlineTitleEdit, setInlineTitleEdit] = useState<InlineTitleEdit | null>(null);
     /** `Enter` で DetailPane の編集領域へフォーカスを移すための参照 (docs/frontend-design.md §6.1) */
     const detailPaneRef = useRef<DetailPaneHandle | null>(null);
 
@@ -115,6 +145,16 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     const toggleCollapsed = useOutlineStore((state) => state.toggleCollapsed);
     const flashTask = useOutlineStore((state) => state.flashTask);
     const exitVisual = useOutlineStore((state) => state.exitVisual);
+
+    // カーソルが別の行へ移ったら行内編集を畳む (行のクリックなど、input の外で起きた移動を拾う)。
+    // useEffect による同期ではなくレンダー中の state 調整で行う (detail-pane.tsx の lastTaskId と同じパターン)
+    const [lastCursorTaskId, setLastCursorTaskId] = useState<string | null>(cursorTaskId);
+    if (cursorTaskId !== lastCursorTaskId) {
+        setLastCursorTaskId(cursorTaskId);
+        if (inlineTitleEdit !== null) {
+            setInlineTitleEdit(null);
+        }
+    }
 
     const tasksById = new Map(optimisticTasks.map((task) => [task.id, task]));
     const rows = buildOutlineTree(optimisticTasks);
@@ -202,16 +242,49 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         });
     };
 
-    const createBelowCursor = (): void => {
+    /**
+     * カーソル行の下 (`o`) / 上 (`O`) に同じ actual parent の兄弟として新規タスクを作る
+     *
+     * position はカーソル行の兄弟グループ内での並び順から決める。カーソル未選択のときは
+     * ルート直下の兄弟グループ末尾へ作る (computeCreatePosition が null を返す)
+     */
+    const createSibling = (placement: SiblingPlacement): void => {
         const parentId = cursorTask?.parent_id ?? null;
+        const position = computeCreatePosition({ tasks: optimisticTasks, cursorTaskId: cursorTask?.id ?? null, placement });
         startTransition(async () => {
-            const result = await createTask({ title: "新規タスク", parentId });
+            const result = await createTask({ title: "新規タスク", parentId, position });
             if (result.ok) {
                 setCursor(result.data.id);
                 setStatusError(null);
                 return;
             }
             setStatusError(formatActionError(result));
+        });
+    };
+
+    /** `i` / `A`。カーソル行のタイトルの行内編集を開始する。実際のフォーカス移動は InlineTitleEditor の callback ref が行う */
+    const startInlineTitleEdit = (caret: InlineTitleCaret): void => {
+        if (cursorTask === null) {
+            return;
+        }
+        setInlineTitleEdit({ taskId: cursorTask.id, caret });
+    };
+
+    /** 行内編集の確定。タイトルが変わっていなければ Server Action を投げずに編集だけ畳む */
+    const commitInlineTitleEdit = (taskId: string, title: string): void => {
+        setInlineTitleEdit(null);
+        const task = tasksById.get(taskId);
+        if (task === undefined || task.title === title) {
+            return;
+        }
+        startTransition(async () => {
+            applyOptimisticAction({ type: "updateTitle", taskId, title });
+            const result = await updateTask({ taskId, title });
+            if (!result.ok) {
+                setStatusError(formatActionError(result));
+                return;
+            }
+            setStatusError(null);
         });
     };
 
@@ -305,7 +378,8 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         handlers: {
             completeCursor,
             completeSelection,
-            createBelowCursor,
+            createSibling,
+            startInlineTitleEdit,
             focusDetailEditor,
             moveCursorSibling,
             indentCursor,
@@ -346,7 +420,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                 >
                     V ビジュアル
                 </button>
-                <button type="button" onClick={createBelowCursor} className="flex-shrink-0 rounded-base border border-border px-2.5 py-1.5 text-xs text-accent hover:bg-accent/10">
+                <button type="button" onClick={() => createSibling("below")} className="flex-shrink-0 rounded-base border border-border px-2.5 py-1.5 text-xs text-accent hover:bg-accent/10">
                     + 新規タスク
                 </button>
                 {/* キーボード操作のヒントはモバイル幅では意味がなく、横幅も圧迫するため md 以上でのみ表示する */}
@@ -363,11 +437,14 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                         cursorTaskId={cursorTaskId}
                         visualSelectedTaskIds={visualSelectedTaskIds}
                         flashTaskId={flashTaskId}
+                        inlineTitleEdit={inlineTitleEdit}
                         onSelectCursor={setCursor}
                         onToggleCollapse={toggleCollapsed}
                         onToggleDone={handleToggleDone}
                         onReorder={handleReorder}
                         onReparent={handleReparent}
+                        onCommitInlineTitle={commitInlineTitleEdit}
+                        onCancelInlineTitle={() => setInlineTitleEdit(null)}
                     />
                     <StatusLine mode={mode} cursorTask={cursorTask} totalCount={optimisticTasks.length} blockedCount={blockedCount} infoMessage={statusMessage} errorMessage={statusError} />
                 </div>
