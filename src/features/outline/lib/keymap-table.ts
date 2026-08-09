@@ -2,8 +2,9 @@ import type { useOutlineStore } from "@/store/outline-store";
 import type { OutlineMode } from "@/store/types";
 
 /**
- * DB アクセスを伴う keymap 操作 (x/o/J/K/</>/dd/Enter, docs/frontend-design.md §6.1)
+ * `OutlineShell` が注入する副作用 (docs/frontend-design.md §6.1)
  *
+ * DB アクセスを伴う操作 (x/o/J/K/</>/dd/Enter) と、ストアに置かない UI ローカル state の操作 (ヘルプ開閉) を持つ。
  * モード遷移のようなストア内完結の操作 (j/k/gg/G/za/V/Esc 等) は keymap エントリの `run` が
  * `context.store` を直接叩くため、ここには含まれない
  */
@@ -24,6 +25,16 @@ export type OutlineKeymapHandlers = {
     outdentCursor: () => void;
     /** `dd`。ゴミ箱へ softDeleteTask する */
     softDeleteCursor: () => void;
+    /** `?`。キーバインドのヘルプオーバーレイを開く */
+    openHelp: () => void;
+    /**
+     * ヘルプオーバーレイを閉じる
+     *
+     * テーブルのエントリからではなく dispatcher 先頭のガードから呼ばれる。
+     * 閉じるキーは「ヘルプ表示中」という文脈でのみ効くべきだが、モードを増やさない制約 (Issue #16) により
+     * テーブルの `mode` 軸ではその文脈を表現できないため (lib/keymap-help.ts の `HELP_CLOSE_KEYS`)
+     */
+    closeHelp: () => void;
 };
 
 /** keymap エントリの `run` に渡す実行コンテキスト */
@@ -34,8 +45,8 @@ type KeymapContext = {
     store: ReturnType<typeof useOutlineStore.getState>;
 };
 
-/** ヘルプ (Issue #16) でのグルーピング単位 */
-type KeymapCategory = "移動" | "編集" | "構造変更" | "折りたたみ" | "モード";
+/** ヘルプオーバーレイでのグルーピング単位 (lib/keymap-help.ts) */
+export type KeymapCategory = "移動" | "編集" | "構造変更" | "折りたたみ" | "モード" | "ヘルプ";
 
 /**
  * keymap の 1 エントリ。キーの一覧・説明・動作の単一の正 (docs/frontend-design.md §6.1)
@@ -99,6 +110,9 @@ export const outlineKeymap: readonly KeymapEntry[] = [
     // NORMAL: モード
     { keys: "V", mode: "NORMAL", category: "モード", description: "ビジュアルモードへ入る", run: ({ store }) => store.enterVisual() },
     { keys: "/", mode: "NORMAL", category: "モード", description: "検索モードへ入る", run: ({ store }) => store.enterSearch() },
+
+    // NORMAL: ヘルプ
+    { keys: "?", mode: "NORMAL", category: "ヘルプ", description: "キーバインドのヘルプを表示", run: ({ handlers }) => handlers.openHelp() },
 
     // VISUAL
     { keys: "j", mode: "VISUAL", category: "移動", description: "選択範囲を 1 行下へ拡張", run: ({ store }) => store.extendVisual("down") },

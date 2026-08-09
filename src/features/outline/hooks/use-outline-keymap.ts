@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { keyEventToToken } from "@/features/outline/lib/key-sequence";
+import { HELP_CLOSE_KEYS } from "@/features/outline/lib/keymap-help";
 import { type OutlineKeymapHandlers, outlineKeymap } from "@/features/outline/lib/keymap-table";
 import { advanceKeySequence, buildKeymapTries, type PendingSequence } from "@/features/outline/lib/keymap-trie";
 import { useOutlineStore } from "@/store/outline-store";
@@ -23,14 +24,27 @@ const isEditableTarget = (target: EventTarget | null): boolean => {
     return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
 };
 
+type UseOutlineKeymapParams = {
+    /** `OutlineShell` が注入する副作用。テーブルの `run` と、ヘルプ表示中のガードが呼ぶ */
+    handlers: OutlineKeymapHandlers;
+    /**
+     * ヘルプオーバーレイが開いているか
+     *
+     * モードを増やさない制約 (Issue #16) により `store.mode` からは判別できないため、
+     * `OutlineShell` のローカル state をそのまま受け取る
+     */
+    isHelpOpen: boolean;
+};
+
 /**
  * NORMAL / VISUAL / SEARCH のキーボードディスパッチを 1 つの keydown ハンドラへ集約するフック (docs/frontend-design.md §6.2)
  *
  * `OutlineShell` がマウント時に 1 つだけ呼び出す想定。処理できるキーは keymap テーブル
  * (`lib/keymap-table.ts`) が単一の正であり、このフックはテーブル以外の経路でキーを処理しない。
+ * 唯一の例外がヘルプ表示中のガードで、これはモードを増やさずに「オーバーレイ表示中」という文脈を扱うための措置である。
  * 待機中のシーケンスは再レンダーを発生させたくないため Zustand ストアではなく本フック内部の useRef で保持する
  */
-export const useOutlineKeymap = (handlers: OutlineKeymapHandlers): void => {
+export const useOutlineKeymap = ({ handlers, isHelpOpen }: UseOutlineKeymapParams): void => {
     const mode = useOutlineStore((state) => state.mode);
     const pendingRef = useRef<PendingSequence | null>(null);
 
@@ -45,6 +59,18 @@ export const useOutlineKeymap = (handlers: OutlineKeymapHandlers): void => {
             const token = keyEventToToken(event);
             if (token === null) {
                 // 修飾キー単独の打鍵。待機状態を壊さずに読み飛ばす
+                return;
+            }
+
+            if (isHelpOpen) {
+                // ヘルプ表示中は裏のカーソルが動かないよう、閉じるキー以外の入力をすべて破棄する。
+                // 破棄時に preventDefault しないのは unmatched と同じ理由 (Ctrl+R 等のブラウザ既定動作を奪わない)
+                pendingRef.current = null;
+                if (!HELP_CLOSE_KEYS.includes(token)) {
+                    return;
+                }
+                handlers.closeHelp();
+                event.preventDefault();
                 return;
             }
 
@@ -77,5 +103,5 @@ export const useOutlineKeymap = (handlers: OutlineKeymapHandlers): void => {
 
         document.addEventListener("keydown", handleKeyDown);
         return () => document.removeEventListener("keydown", handleKeyDown);
-    }, [mode, handlers]);
+    }, [mode, handlers, isHelpOpen]);
 };

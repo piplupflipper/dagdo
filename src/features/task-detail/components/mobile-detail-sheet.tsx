@@ -9,6 +9,8 @@ type MobileDetailSheetProps = {
     allTasks: AppTask[];
     dependencies: TaskDependency[];
     flashTaskId: string | null;
+    /** 前面のオーバーレイ (ヘルプ) が開いている間 true。開いているシートも背面として不活性にする */
+    isInert: boolean;
     /** 背景タップ・閉じるボタンから呼ばれる。OutlineShell 側でカーソルを解除してシートを閉じる */
     onClose: () => void;
 };
@@ -22,15 +24,16 @@ type MobileDetailSheetProps = {
  * このコンポーネント自身が md 以上で display:none になる (md:hidden)。
  * 詳細表示・依存グラフのロジックは DetailPane / DagPanel をそのまま再利用し、重複させない
  */
-export const MobileDetailSheet = ({ task, allTasks, dependencies, flashTaskId, onClose }: MobileDetailSheetProps): JSX.Element => {
+export const MobileDetailSheet = ({ task, allTasks, dependencies, flashTaskId, isInert, onClose }: MobileDetailSheetProps): JSX.Element => {
     // カーソル (選択タスク) の有無をそのまま開閉状態とする。閉じる = カーソル解除なので、
     // 同じ行を再度タップすれば必ず開き直せる (シート側に開閉 state を二重に持たない)
     const isOpen = task !== null;
 
     return (
         // 閉じている間もマウントしたままにして translate のトランジションを効かせる。
-        // 代わりに inert とポインタイベント無効化で、閉じている間は背面の操作を妨げないようにする
-        <div className={`fixed inset-0 z-40 md:hidden ${isOpen ? "" : "pointer-events-none"}`} inert={!isOpen}>
+        // 代わりに inert とポインタイベント無効化で、閉じている間は背面の操作を妨げないようにする。
+        // 開いていても isInert のとき (ヘルプ表示中) は同様に不活性にする
+        <div className={`fixed inset-0 z-40 md:hidden ${isOpen ? "" : "pointer-events-none"}`} inert={!isOpen || isInert}>
             <button
                 type="button"
                 aria-label="詳細を閉じる"

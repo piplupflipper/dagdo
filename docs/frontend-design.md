@@ -357,6 +357,7 @@ NORMAL モード。
 | `V` | ビジュアルモードへ | 第 5.1 節参照 |
 | `dd` | ゴミ箱へ移動 | `softDeleteTask`。連続 2 打鍵で確定する（vim の `dd` に倣う。pending key 方式、第 6.2 節） |
 | `/` | 検索モードへ | 第 5.1 節参照 |
+| `?` | キーバインドのヘルプを表示 | ヘルプオーバーレイを開く。表示内容は keymap テーブルから生成する（第 6.3 節） |
 | `u` | undo | V1 のスコープ外とする（提案。`req.md` に undo の記載はなく、本設計書で明示的に対象外とする） |
 
 VISUAL モード。
@@ -411,7 +412,7 @@ const useOutlineKeymap = (): void => {
 type KeymapEntry = {
     keys: string; // スペース区切りのキーシーケンス表現（"j" / "g g" / "z a" / "C-d"）
     mode: OutlineMode;
-    category: KeymapCategory; // ヘルプでのグルーピング用（移動 / 編集 / 構造変更 / 折りたたみ / モード）
+    category: KeymapCategory; // ヘルプでのグルーピング用（移動 / 編集 / 構造変更 / 折りたたみ / モード / ヘルプ）
     description: string; // ヘルプ表示用の説明
     run?: (context: KeymapContext) => void; // 省略時はヘルプにのみ表示する
 };
@@ -440,6 +441,27 @@ trie の構築（`buildKeymapTries`）と 1 打鍵ぶんの待機状態遷移（
 待機状態そのものは UI 描画に影響しない値であるため、Zustand ストアには置かず、`use-outline-keymap.ts` 内部の `useRef` で保持する（確定事項）。
 ストアに置かない理由は、待機状態の変化のたびにストア購読コンポーネントを再レンダリングする必要がなく、`useOutlineKeymap` 自身だけが参照できれば足りるためである。
 
+### 6.3 キーバインドのヘルプオーバーレイ
+
+`?`（第 6.1 節）で開くヘルプの表示内容は、keymap テーブルを `mode` → `category` でグルーピングして生成する（確定事項）。
+ヘルプ側にキー一覧を直書きすると二重管理になり drift するためである。
+変換は `features/outline/lib/keymap-help.ts` の `buildKeymapHelpSections` に純粋関数として置き、表示は `features/outline/components/keymap-help-overlay.tsx` が担う。
+`keys` は `parseKeySequence`（第 6.2 節）でトークンへ分解し、1 トークン = 1 つの `kbd` として描画する。
+`run` を持たないエントリも表示対象に含める（`run` を任意にしている目的がヘルプへの掲載であるため）。
+
+開閉状態は `OutlineShell` のローカル state が持ち、`OutlineMode` にモードを追加しない（確定事項）。
+モードを増やすと store・dispatcher・StatusLine の全体に状態機械が波及するのに対し、ヘルプは裏の状態を一切変えない一時的な表示にすぎないためである。
+
+閉じるキー `q` / `Esc`（`HELP_CLOSE_KEYS`）は、テーブルではなく dispatcher 先頭のガードで処理する（確定事項）。
+テーブルのエントリは `mode` でしか文脈を区別できず、「ヘルプ表示中だけ効く」という文脈をモードを増やさずに表現できないためである。
+このガードはヘルプ表示中に閉じるキー以外の入力をすべて破棄し、オーバーレイの裏でカーソルが動くことを防ぐ。
+破棄時に `preventDefault` しないのは、第 6.2 節の「破棄」と同じ理由による。
+
+表示中は `OutlineShell` の背面要素（ヘッダ・2 ペイン・`MobileDetailSheet`）へ `inert` を付ける（確定事項）。
+`role="dialog"` と `aria-modal="true"` で「背面は不活性」と宣言している以上、`Tab` で背面へ抜けられる状態は宣言と矛盾するためである。
+加えて抜けた先が `textarea` の場合は `isEditableTarget`（第 6.2 節）が dispatcher の手前で return するため、`q` / `Esc` で閉じられなくなる実害がある。
+`MobileDetailSheet` が閉じている間に使っている `inert` と同じ道具で揃える。
+
 ---
 
 ## 7. コンポーネント構成
@@ -460,6 +482,7 @@ app/page.tsx                          [Server Component]
       ├ DagPanel                      [Client] (SVG)
       ├ StatusLine                    [Client]
       ├ SearchOverlay                 [Client] (mode === "SEARCH" のとき表示)
+      ├ KeymapHelpOverlay             [Client] (? で開く。開閉は OutlineShell のローカル state。第 6.3 節)
       └ MobileDetailSheet             [Client] (モバイル幅のとき DetailPane の代わりに表示)
 
 app/trash/page.tsx                    [Server Component]
