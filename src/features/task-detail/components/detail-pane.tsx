@@ -1,6 +1,6 @@
 "use client";
 
-import { type JSX, useState } from "react";
+import { type JSX, type Ref, useImperativeHandle, useRef, useState } from "react";
 import { removeDependency } from "@/features/task/actions/remove-dependency";
 import { updateTask } from "@/features/task/actions/update-task";
 import type { AppTask, TaskDependency } from "@/types/task";
@@ -8,11 +8,19 @@ import { BlockedReasonBar } from "./blocked-reason-bar";
 import { MarkdownEditor } from "./markdown-editor";
 import { MarkdownPreview } from "./markdown-preview";
 
-/** DetailPane の props (OutlineShell が参照する公開契約。シグネチャ変更禁止) */
+/** DetailPane が親へ公開する命令的 API (docs/frontend-design.md §6.1 の `Enter` = 編集領域へフォーカスを移す、を実現するためのもの) */
+export type DetailPaneHandle = {
+    /** 説明の編集を開始し、MarkdownEditor の textarea へフォーカスを移す。タスク未選択時は何もしない */
+    focusEditor: () => void;
+};
+
+/** DetailPane の props (OutlineShell が参照する公開契約。task / allTasks / dependencies のシグネチャ変更禁止) */
 type DetailPaneProps = {
     task: AppTask | null;
     allTasks: AppTask[];
     dependencies: TaskDependency[];
+    /** OutlineShell が focusEditor を呼ぶための ref (React 19 では ref を通常の prop として受け取れるため forwardRef は使わない) */
+    ref?: Ref<DetailPaneHandle>;
 };
 
 type TaskStatus = "done" | "blocked" | "ready";
@@ -63,7 +71,7 @@ const isOverdue = (dueDate: string): boolean => {
  * 期日は表示 / 編集 (input[type=date]) を切り替え、いずれも編集確定で updateTask を呼んで保存する
  * (失敗時はインラインでエラーを表示する)
  */
-export const DetailPane = ({ task, allTasks, dependencies }: DetailPaneProps): JSX.Element => {
+export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProps): JSX.Element => {
     // タスク切替時にのみ編集状態をリセットする (レンダー中の state 調整。React 公式の推奨パターンであり
     // useEffect による同期を避けることで useOutlineKeymap 側と同様に「必要な処理だけを行う」構成にする)
     const [lastTaskId, setLastTaskId] = useState<string | null>(task?.id ?? null);
@@ -78,6 +86,41 @@ export const DetailPane = ({ task, allTasks, dependencies }: DetailPaneProps): J
     const [dueDateError, setDueDateError] = useState<string | null>(null);
     const [dependencyError, setDependencyError] = useState<string | null>(null);
     const [removingDependencyId, setRemovingDependencyId] = useState<string | null>(null);
+
+    /** 編集中に表示されている textarea。非編集中は null */
+    const editorRef = useRef<HTMLTextAreaElement | null>(null);
+    /** 編集開始と同時にフォーカスしたいという要求。textarea のマウント時 (attachEditor) に消費する */
+    const pendingEditorFocusRef = useRef(false);
+
+    // ref は毎レンダー張り替え、focusEditor が常に最新の task を参照できるようにする
+    useImperativeHandle(ref, () => ({
+        focusEditor: (): void => {
+            if (task === null) {
+                return;
+            }
+            const editor = editorRef.current;
+            if (editor !== null) {
+                // すでに編集中なら textarea へフォーカスを移すだけでよい
+                editor.focus();
+                return;
+            }
+            // textarea は編集開始後のレンダーでマウントされるため、フォーカスは attachEditor に委ねる
+            pendingEditorFocusRef.current = true;
+            setDraft(task.description);
+            setError(null);
+            setIsEditing(true);
+        },
+    }));
+
+    /** MarkdownEditor の textarea を保持し、保留中のフォーカス要求があればマウント時に消費する */
+    const attachEditor = (element: HTMLTextAreaElement | null): void => {
+        editorRef.current = element;
+        if (element === null || !pendingEditorFocusRef.current) {
+            return;
+        }
+        pendingEditorFocusRef.current = false;
+        element.focus();
+    };
 
     const currentTaskId = task?.id ?? null;
     if (currentTaskId !== lastTaskId) {
@@ -284,7 +327,7 @@ export const DetailPane = ({ task, allTasks, dependencies }: DetailPaneProps): J
 
                 {isEditing ? (
                     <div className="space-y-2">
-                        <MarkdownEditor value={draft} onChange={setDraft} disabled={isSaving} />
+                        <MarkdownEditor ref={attachEditor} value={draft} onChange={setDraft} disabled={isSaving} />
                         {error !== null ? <p className="text-xs text-overdue">{error}</p> : null}
                         <div className="flex justify-end gap-2">
                             <button type="button" onClick={handleCancelEdit} disabled={isSaving} className="rounded-md border border-border px-3 py-1 text-xs text-text-dim disabled:opacity-60">

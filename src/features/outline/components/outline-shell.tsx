@@ -1,6 +1,6 @@
 "use client";
 
-import { type JSX, useEffect, useOptimistic, useState, useTransition } from "react";
+import { type JSX, useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import { DagPanel } from "@/features/dag/components/dag-panel";
 import { OutlinePane } from "@/features/outline/components/outline-pane";
 import { StatusLine } from "@/features/outline/components/status-line";
@@ -16,7 +16,7 @@ import { reopenTask } from "@/features/task/actions/reopen-task";
 import { reorderTasks } from "@/features/task/actions/reorder-tasks";
 import { softDeleteTask } from "@/features/task/actions/soft-delete-task";
 import type { ActionResult, TaskErrorCode } from "@/features/task/lib/action-result";
-import { DetailPane } from "@/features/task-detail/components/detail-pane";
+import { DetailPane, type DetailPaneHandle } from "@/features/task-detail/components/detail-pane";
 import { useOutlineStore } from "@/store/outline-store";
 import type { AppTask, TaskDependency } from "@/types/task";
 
@@ -92,6 +92,8 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     const [, startTransition] = useTransition();
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
     const [statusError, setStatusError] = useState<string | null>(null);
+    /** `Enter` で DetailPane の編集領域へフォーカスを移すための参照 (docs/frontend-design.md §6.1) */
+    const detailPaneRef = useRef<DetailPaneHandle | null>(null);
 
     const mode = useOutlineStore((state) => state.mode);
     const cursorTaskId = useOutlineStore((state) => state.cursorTaskId);
@@ -205,7 +207,11 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     };
 
     const focusDetailEditor = (): void => {
-        // TODO(integration): DetailPane 側に編集領域へのフォーカス制御用 API が追加され次第、ここから呼び出す
+        // タスク未選択のときは DetailPane が編集領域を持たない (「タスクを選択してください」表示) ため何もしない
+        if (cursorTask === null) {
+            return;
+        }
+        detailPaneRef.current?.focusEditor();
     };
 
     const moveCursorSibling = (direction: "up" | "down"): void => {
@@ -339,7 +345,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                     <StatusLine mode={mode} cursorTask={cursorTask} totalCount={optimisticTasks.length} blockedCount={blockedCount} infoMessage={statusMessage} errorMessage={statusError} />
                 </div>
                 <div className="flex min-w-0 flex-1 flex-col bg-bg-alt">
-                    <DetailPane task={cursorTask} allTasks={optimisticTasks} dependencies={dependencies} />
+                    <DetailPane ref={detailPaneRef} task={cursorTask} allTasks={optimisticTasks} dependencies={dependencies} />
                     <DagPanel centerTaskId={cursorTaskId} tasks={optimisticTasks} dependencies={dependencies} flashTaskId={flashTaskId} />
                 </div>
             </div>
