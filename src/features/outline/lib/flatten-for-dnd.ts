@@ -153,8 +153,9 @@ export const computeOutdent = ({ tasks, taskId }: { tasks: readonly AppTask[]; t
  * 表示上の添字と DB の position がずれ、`o` で作ったタスクがカーソル行の手前に入る
  *
  * position は削除済みも含めた兄弟グループ内で 0 から連続する。作成が末尾 (`count`) へ採番し (create-task.ts)、
- * move_task が ±1 のシフトで連続性を保ち、reorder_tasks は削除済みを含む兄弟グループ全体を 0..n-1 で振り直す
- * (対象が欠けていれば INVALID_PARENT で失敗する) ためである。
+ * move_task が ±1 のシフトで連続性を保ち、reorder_tasks は可視の兄弟が占めている position の集合をそのまま
+ * 使い回して順序だけを入れ替える (supabase/migrations/20260808000007_reorder_tasks_exclude_deleted_siblings.sql)
+ * ためである。いずれもグループ全体が占める position の集合を変えない。
  * したがって `position + 1` が作成時の `count` を超えることはない。
  *
  * `app_tasks` View の生成型では position は nullable だが、AppTask が non-null へ narrowing している (src/types/task.ts) ため
