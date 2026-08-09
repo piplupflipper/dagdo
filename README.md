@@ -15,12 +15,13 @@ entodo は、アウトライナー形式 + vim ライクなキーボード操作
 Node.js は 22 系を使用する（`.node-version` 参照）。[mise](https://mise.jdx.dev/) 等のバージョンマネージャでのピン解決を推奨する。
 
 ```bash
-make setup   # 依存インストール + ローカル Supabase 起動 + DB 構築 + 型生成
+make setup   # 依存インストール + ローカル Supabase 起動 + DB 構築 + 型生成 + .env.local 生成
 make fe-dev  # 開発サーバー起動
 ```
 
 `http://localhost:3000` を開く。
 GitHub ログインには OAuth App の設定が必要（[docs/github-oauth-setup.md](./docs/github-oauth-setup.md) 参照）。
+作成した Client ID / Secret は、`make setup` が生成した `.env.local` の `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` のコメントを外して設定する。
 
 ## 主な操作
 
