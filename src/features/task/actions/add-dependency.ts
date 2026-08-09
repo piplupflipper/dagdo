@@ -11,9 +11,7 @@ import { createAppClient } from "@/lib/supabase/app-client";
  *
  * cycle 検出ロジックは DB Trigger (check_task_dependency_cycle) に委譲する
  *
- * knip ignore 対象 (意図的未使用)。依存追加 UI (依存先ピッカー等) は本改修の対象外であり、
- * 現状 UI から呼ばれていない。DetailPane 側で依存削除 UI (removeDependency) 実装時に
- * 「再追加が容易」と説明する根拠となる Action であり、依存追加 UI 実装時にこの ignore を外す
+ * DetailPane の依存先追加 UI (依存先セレクト + 追加ボタン) から呼ばれる
  */
 export const addDependency = async ({ taskId, dependsOnTaskId }: { taskId: string; dependsOnTaskId: string }): Promise<ActionResult> => {
     const userId = await getSessionUserId();
