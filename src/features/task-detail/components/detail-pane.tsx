@@ -1,8 +1,10 @@
 "use client";
 
 import { type JSX, type Ref, useImperativeHandle, useRef, useState } from "react";
+import { addDependency } from "@/features/task/actions/add-dependency";
 import { removeDependency } from "@/features/task/actions/remove-dependency";
 import { updateTask } from "@/features/task/actions/update-task";
+import type { TaskErrorCode } from "@/features/task/lib/action-result";
 import type { AppTask, TaskDependency } from "@/types/task";
 import { BlockedReasonBar } from "./blocked-reason-bar";
 import { MarkdownEditor } from "./markdown-editor";
@@ -57,6 +59,20 @@ const formatDateTime = (iso: string): string =>
         minute: "2-digit",
     }).format(new Date(iso));
 
+/**
+ * 依存の追加・削除で起こり得るエラーコードに対応する UI 表示用の日本語文言
+ *
+ * ActionResult の message は英語のログ用文言であり (action-result.ts)、UI 表示用の日本語は呼び出し側が code から組み立てる
+ */
+const DEPENDENCY_ERROR_MESSAGE: Partial<Record<TaskErrorCode, string>> = {
+    TASK_NOT_FOUND: "対象のタスクが見つかりません",
+    TASK_DEPENDENCY_CYCLE: "循環する依存は追加できません",
+    DEPENDENCY_ALREADY_EXISTS: "その依存はすでに追加されています",
+};
+
+/** 依存操作の失敗コードを表示用の日本語文言へ変換する (対応表にないコードはコードを添えて示す) */
+const formatDependencyError = (code: TaskErrorCode): string => DEPENDENCY_ERROR_MESSAGE[code] ?? `依存関係の更新に失敗しました (${code})`;
+
 /** due_date (YYYY-MM-DD) が Asia/Tokyo の「今日」より前かどうか */
 const isOverdue = (dueDate: string): boolean => {
     const todayJst = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(new Date());
@@ -70,6 +86,7 @@ const isOverdue = (dueDate: string): boolean => {
  * description はプレビュー (MarkdownPreview) / 編集 (MarkdownEditor) を切り替え、
  * 期日は表示 / 編集 (input[type=date]) を切り替え、いずれも編集確定で updateTask を呼んで保存する
  * (失敗時はインラインでエラーを表示する)
+ * 依存先は一覧表示・削除 (removeDependency) に加え、候補セレクトからの追加 (addDependency) も行う
  */
 export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProps): JSX.Element => {
     // タスク切替時にのみ編集状態をリセットする (レンダー中の state 調整。React 公式の推奨パターンであり
@@ -86,6 +103,8 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
     const [dueDateError, setDueDateError] = useState<string | null>(null);
     const [dependencyError, setDependencyError] = useState<string | null>(null);
     const [removingDependencyId, setRemovingDependencyId] = useState<string | null>(null);
+    const [selectedDependsOnTaskId, setSelectedDependsOnTaskId] = useState("");
+    const [isAddingDependency, setIsAddingDependency] = useState(false);
 
     /** 編集中に表示されている textarea。非編集中は null */
     const editorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -132,6 +151,7 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
         setIsEditingDueDate(false);
         setDueDateError(null);
         setDependencyError(null);
+        setSelectedDependsOnTaskId("");
     }
 
     if (task === null) {
@@ -147,14 +167,38 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
         .map((dependency) => allTasks.find((candidate) => candidate.id === dependency.depends_on_task_id))
         .filter((candidate): candidate is AppTask => candidate !== undefined);
 
+    /**
+     * 依存先として追加できるタスク
+     *
+     * 自分自身は依存先にできず、既存の依存先を再度追加すると DEPENDENCY_ALREADY_EXISTS になるため、どちらも候補から除外する。
+     * 循環 (TASK_DEPENDENCY_CYCLE) の判定は DB Trigger に委譲し、候補の絞り込みでは行わない
+     */
+    const dependsOnTaskIds = new Set(dependsOnTasks.map((dependsOnTask) => dependsOnTask.id));
+    const dependencyCandidates = allTasks.filter((candidate) => candidate.id !== task.id && !dependsOnTaskIds.has(candidate.id));
+
     const handleRemoveDependency = async (dependsOnTaskId: string): Promise<void> => {
         setRemovingDependencyId(dependsOnTaskId);
         setDependencyError(null);
         const result = await removeDependency({ taskId: task.id, dependsOnTaskId });
         setRemovingDependencyId(null);
         if (!result.ok) {
-            setDependencyError(result.message);
+            setDependencyError(formatDependencyError(result.code));
         }
+    };
+
+    const handleAddDependency = async (): Promise<void> => {
+        if (selectedDependsOnTaskId === "") {
+            return;
+        }
+        setIsAddingDependency(true);
+        setDependencyError(null);
+        const result = await addDependency({ taskId: task.id, dependsOnTaskId: selectedDependsOnTaskId });
+        setIsAddingDependency(false);
+        if (result.ok) {
+            setSelectedDependsOnTaskId("");
+            return;
+        }
+        setDependencyError(formatDependencyError(result.code));
     };
 
     const handleStartEdit = (): void => {
@@ -290,9 +334,10 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
 
             {task.completed_at !== null ? <div className="mb-1.5 text-xs text-text-dim">完了日時: {formatDateTime(task.completed_at)}</div> : null}
 
-            {dependsOnTasks.length > 0 ? (
-                <div className="mt-3">
-                    <div className="mb-1.5 text-xs text-text-dim">依存先</div>
+            {/* 依存先は 0 件でも追加 UI を出す必要があるため、一覧の有無に関わらずセクション自体は常に描画する */}
+            <div className="mt-3">
+                <div className="mb-1.5 text-xs text-text-dim">依存先</div>
+                {dependsOnTasks.length > 0 ? (
                     <ul className="flex flex-col gap-1">
                         {dependsOnTasks.map((dependsOnTask) => (
                             <li key={dependsOnTask.id} className="flex items-center justify-between gap-2 rounded-base border border-border bg-bg-alt px-2.5 py-1 text-xs">
@@ -311,9 +356,43 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
                             </li>
                         ))}
                     </ul>
-                    {dependencyError !== null ? <p className="mt-1 text-xs text-overdue">{dependencyError}</p> : null}
-                </div>
-            ) : null}
+                ) : (
+                    <p className="text-xs text-text-dim">依存先はありません</p>
+                )}
+
+                {dependencyCandidates.length > 0 ? (
+                    <div className="mt-1.5 flex items-center gap-2">
+                        <select
+                            value={selectedDependsOnTaskId}
+                            onChange={(event) => setSelectedDependsOnTaskId(event.target.value)}
+                            disabled={isAddingDependency}
+                            aria-label="追加する依存先タスク"
+                            className="min-w-0 flex-1 rounded-base border border-border bg-bg px-2 py-1 text-xs text-text disabled:opacity-60"
+                        >
+                            <option value="">依存先タスクを選択…</option>
+                            {dependencyCandidates.map((candidate) => (
+                                <option key={candidate.id} value={candidate.id}>
+                                    {candidate.title}
+                                </option>
+                            ))}
+                        </select>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                void handleAddDependency();
+                            }}
+                            disabled={isAddingDependency || selectedDependsOnTaskId === ""}
+                            className="flex-shrink-0 rounded-base border border-border px-2.5 py-1 text-xs text-accent hover:bg-accent/10 disabled:opacity-60"
+                        >
+                            {isAddingDependency ? "追加中…" : "追加"}
+                        </button>
+                    </div>
+                ) : (
+                    <p className="mt-1.5 text-xs text-text-dim">追加できる依存先タスクがありません</p>
+                )}
+
+                {dependencyError !== null ? <p className="mt-1 text-xs text-overdue">{dependencyError}</p> : null}
+            </div>
 
             <div className="mt-3">
                 <div className="mb-1.5 flex items-center justify-between">
