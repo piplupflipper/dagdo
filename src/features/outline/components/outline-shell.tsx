@@ -2,6 +2,7 @@
 
 import { type JSX, useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import { DagPanel } from "@/features/dag/components/dag-panel";
+import { KeymapHelpOverlay } from "@/features/outline/components/keymap-help-overlay";
 import { OutlinePane } from "@/features/outline/components/outline-pane";
 import { StatusLine } from "@/features/outline/components/status-line";
 import { useOutlineKeymap } from "@/features/outline/hooks/use-outline-keymap";
@@ -93,6 +94,13 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     const [, startTransition] = useTransition();
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
     const [statusError, setStatusError] = useState<string | null>(null);
+    /**
+     * `?` のヘルプオーバーレイの開閉状態 (Issue #16)
+     *
+     * モードは NORMAL / VISUAL / SEARCH の 3 値に保つ制約があるため `OutlineMode` には足さず、
+     * UI ローカルの表示状態としてここで持つ (Zustand ストアにも置かない)
+     */
+    const [isHelpOpen, setIsHelpOpen] = useState(false);
     /** `Enter` で DetailPane の編集領域へフォーカスを移すための参照 (docs/frontend-design.md §6.1) */
     const detailPaneRef = useRef<DetailPaneHandle | null>(null);
 
@@ -294,19 +302,35 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     };
 
     useOutlineKeymap({
-        completeCursor,
-        completeSelection,
-        createBelowCursor,
-        focusDetailEditor,
-        moveCursorSibling,
-        indentCursor,
-        outdentCursor,
-        softDeleteCursor,
+        handlers: {
+            completeCursor,
+            completeSelection,
+            createBelowCursor,
+            focusDetailEditor,
+            moveCursorSibling,
+            indentCursor,
+            outdentCursor,
+            softDeleteCursor,
+            openHelp: () => setIsHelpOpen(true),
+            closeHelp: () => setIsHelpOpen(false),
+        },
+        isHelpOpen,
     });
 
     return (
         <div className="flex h-dvh flex-col bg-bg text-text">
-            <div className="flex flex-shrink-0 items-center gap-2 border-b border-border bg-bg-alt px-3.5 py-2">
+            {/*
+             * ヘルプ表示中の背面は inert にする (MobileDetailSheet が閉じている間と同じ道具)
+             *
+             * role="dialog" + aria-modal="true" で「背面は不活性」と支援技術へ宣言している以上、
+             * Tab で背面へ抜けられる状態はその宣言と矛盾する。
+             * 抜けた先が textarea だと isEditableTarget により dispatcher が手前で return するため、
+             * q / Esc でヘルプを閉じられなくなる実害もある。
+             * オーバーレイ自身 (KeymapHelpOverlay) はこのルート直下の兄弟であり inert の外に置く。
+             * SearchOverlay は mode === "SEARCH" のときだけ描画されるが、? は NORMAL のエントリで、
+             * SEARCH へ入る導線 (`/` とヘッダの検索ボタン) は表示中どちらも封じられるため対象外でよい
+             */}
+            <div className="flex flex-shrink-0 items-center gap-2 border-b border-border bg-bg-alt px-3.5 py-2" inert={isHelpOpen}>
                 <button
                     type="button"
                     onClick={() => useOutlineStore.getState().enterSearch()}
@@ -326,11 +350,11 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                     + 新規タスク
                 </button>
                 {/* キーボード操作のヒントはモバイル幅では意味がなく、横幅も圧迫するため md 以上でのみ表示する */}
-                <span className="ml-auto hidden text-[11px] text-text-dim md:inline">j k 移動・x 完了・V 範囲選択・/ 検索</span>
+                <span className="ml-auto hidden text-[11px] text-text-dim md:inline">j k 移動・x 完了・V 範囲選択・/ 検索・? ヘルプ</span>
             </div>
 
             {/* PC 幅は 2 ペイン、モバイル幅は左ペイン全幅 + MobileDetailSheet。切り替えは Tailwind のブレークポイントのみで行う */}
-            <div className="flex min-h-0 flex-1">
+            <div className="flex min-h-0 flex-1" inert={isHelpOpen}>
                 <div className="flex min-w-0 flex-1 flex-col border-border md:flex-[0_0_60%] md:border-r">
                     <OutlinePane
                         visibleRows={visibleRows}
@@ -353,9 +377,11 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                 </div>
             </div>
 
-            <MobileDetailSheet task={cursorTask} allTasks={optimisticTasks} dependencies={dependencies} flashTaskId={flashTaskId} onClose={() => setCursor(null)} />
+            <MobileDetailSheet task={cursorTask} allTasks={optimisticTasks} dependencies={dependencies} flashTaskId={flashTaskId} isInert={isHelpOpen} onClose={() => setCursor(null)} />
 
             <SearchOverlay />
+
+            <KeymapHelpOverlay isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
         </div>
     );
 };
