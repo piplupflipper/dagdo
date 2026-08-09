@@ -1,6 +1,6 @@
 "use client";
 
-import { type JSX, type Ref, useImperativeHandle, useRef, useState } from "react";
+import { type ChangeEvent, type JSX, type KeyboardEvent, type MouseEvent, type Ref, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { addDependency } from "@/features/task/actions/add-dependency";
 import { removeDependency } from "@/features/task/actions/remove-dependency";
 import { updateTask } from "@/features/task/actions/update-task";
@@ -83,7 +83,7 @@ const isOverdue = (dueDate: string): boolean => {
  * 右ペイン上部の詳細パネル (docs/frontend-design.md §7.1)
  *
  * タイトル・状態・期日・完了日時を表示し、blocked の場合は BlockedReasonBar を表示する
- * description はプレビュー (MarkdownPreview) / 編集 (MarkdownEditor) を切り替え、
+ * title は見出し / 入力欄 (input) を、description はプレビュー (MarkdownPreview) / 編集 (MarkdownEditor) を切り替え、
  * 期日は表示 / 編集 (input[type=date]) を切り替え、いずれも編集確定で updateTask を呼んで保存する
  * (失敗時はインラインでエラーを表示する)
  * 依存先は一覧表示・削除 (removeDependency) に加え、候補セレクトからの追加 (addDependency) も行う
@@ -96,6 +96,10 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
     const [isEditing, setIsEditing] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [titleDraft, setTitleDraft] = useState(task?.title ?? "");
+    const [isEditingTitle, setIsEditingTitle] = useState(false);
+    const [isSavingTitle, setIsSavingTitle] = useState(false);
+    const [titleError, setTitleError] = useState<string | null>(null);
     // 期日編集の draft は input[type=date] の値そのもの (YYYY-MM-DD)。空文字は「期日なし」を表す
     const [dueDateDraft, setDueDateDraft] = useState(task?.due_date ?? "");
     const [isEditingDueDate, setIsEditingDueDate] = useState(false);
@@ -105,6 +109,17 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
     const [removingDependencyId, setRemovingDependencyId] = useState<string | null>(null);
     const [selectedDependsOnTaskId, setSelectedDependsOnTaskId] = useState("");
     const [isAddingDependency, setIsAddingDependency] = useState(false);
+    const titleInputRef = useRef<HTMLInputElement>(null);
+
+    // タイトル編集を開始した直後に入力できるようフォーカスし、既存タイトルを選択状態にする
+    // (「新規タスク」のまま放置されたタスクをそのまま上書きできるようにする)
+    useEffect(() => {
+        const input = titleInputRef.current;
+        if (isEditingTitle && input !== null) {
+            input.focus();
+            input.select();
+        }
+    }, [isEditingTitle]);
 
     /** 編集中に表示されている textarea。非編集中は null */
     const editorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -147,6 +162,9 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
         setDraft(task?.description ?? "");
         setIsEditing(false);
         setError(null);
+        setTitleDraft(task?.title ?? "");
+        setIsEditingTitle(false);
+        setTitleError(null);
         setDueDateDraft(task?.due_date ?? "");
         setIsEditingDueDate(false);
         setDueDateError(null);
@@ -199,6 +217,82 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
             return;
         }
         setDependencyError(formatDependencyError(result.code));
+    };
+
+    const handleStartTitleEdit = (): void => {
+        setTitleDraft(task.title);
+        setTitleError(null);
+        setIsEditingTitle(true);
+    };
+
+    const handleCancelTitleEdit = (): void => {
+        setTitleDraft(task.title);
+        setTitleError(null);
+        setIsEditingTitle(false);
+    };
+
+    const handleTitleChange = (event: ChangeEvent<HTMLInputElement>): void => {
+        setTitleDraft(event.target.value);
+    };
+
+    /**
+     * トリム後のタイトルを保存する
+     *
+     * 空文字は DB 制約 tasks_title_not_blank に反し、その CHECK 違反は TaskErrorCode へ変換できず
+     * mapDbErrorOrThrow が re-throw するため、送信前にここで弾いてインラインエラーにする
+     */
+    const handleSaveTitle = async (): Promise<void> => {
+        const trimmedTitle = titleDraft.trim();
+        if (trimmedTitle === "") {
+            setTitleError("タイトルは空にできません");
+            return;
+        }
+        // 変更がなければ blur 確定などで無駄な更新を投げない
+        if (trimmedTitle === task.title) {
+            setTitleError(null);
+            setIsEditingTitle(false);
+            return;
+        }
+        setIsSavingTitle(true);
+        setTitleError(null);
+        const result = await updateTask({ taskId: task.id, title: trimmedTitle });
+        setIsSavingTitle(false);
+        if (result.ok) {
+            setIsEditingTitle(false);
+            return;
+        }
+        setTitleError(result.message);
+    };
+
+    const handleTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+        // IME 変換確定の Enter/Esc を編集確定・取り消しと取り違えない (SearchOverlay と同じ扱い)
+        if (event.nativeEvent.isComposing) {
+            return;
+        }
+        if (event.key === "Enter") {
+            event.preventDefault();
+            void handleSaveTitle();
+        } else if (event.key === "Escape") {
+            event.preventDefault();
+            handleCancelTitleEdit();
+        }
+    };
+
+    const handleTitleBlur = (): void => {
+        if (isSavingTitle) {
+            return;
+        }
+        void handleSaveTitle();
+    };
+
+    /**
+     * タイトル編集のボタン押下で input が blur するのを防ぐ
+     *
+     * blur 確定を採用しているため、これがないとキャンセル押下時に blur の保存が先に走ってしまう
+     * mousedown の既定動作 (フォーカス移動) だけを止めるので click ハンドラは通常どおり発火する
+     */
+    const handleTitleButtonMouseDown = (event: MouseEvent<HTMLButtonElement>): void => {
+        event.preventDefault();
     };
 
     const handleStartEdit = (): void => {
@@ -260,7 +354,52 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
         <div className="flex-1 overflow-y-auto p-4">
             {status === "blocked" ? <BlockedReasonBar task={task} allTasks={allTasks} dependencies={dependencies} /> : null}
 
-            <h3 className={`mb-2 text-base font-semibold ${status === "done" ? "text-text-dim line-through" : "text-text"}`}>{task.title}</h3>
+            {isEditingTitle ? (
+                <div className="mb-2 space-y-2">
+                    <input
+                        ref={titleInputRef}
+                        type="text"
+                        value={titleDraft}
+                        onChange={handleTitleChange}
+                        onKeyDown={handleTitleKeyDown}
+                        onBlur={handleTitleBlur}
+                        disabled={isSavingTitle}
+                        aria-label="タイトルを編集"
+                        placeholder="タスクのタイトルを入力…"
+                        className="w-full rounded-md border border-border bg-bg px-3 py-2 text-base font-semibold text-text outline-none focus:border-accent disabled:opacity-60"
+                    />
+                    {titleError !== null ? <p className="text-xs text-overdue">{titleError}</p> : null}
+                    <div className="flex justify-end gap-2">
+                        <button
+                            type="button"
+                            onMouseDown={handleTitleButtonMouseDown}
+                            onClick={handleCancelTitleEdit}
+                            disabled={isSavingTitle}
+                            className="rounded-md border border-border px-3 py-1 text-xs text-text-dim disabled:opacity-60"
+                        >
+                            キャンセル
+                        </button>
+                        <button
+                            type="button"
+                            onMouseDown={handleTitleButtonMouseDown}
+                            onClick={() => {
+                                void handleSaveTitle();
+                            }}
+                            disabled={isSavingTitle}
+                            className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-bg disabled:opacity-60"
+                        >
+                            {isSavingTitle ? "保存中…" : "保存"}
+                        </button>
+                    </div>
+                </div>
+            ) : (
+                <div className="mb-2 flex items-start justify-between gap-2">
+                    <h3 className={`text-base font-semibold ${status === "done" ? "text-text-dim line-through" : "text-text"}`}>{task.title}</h3>
+                    <button type="button" onClick={handleStartTitleEdit} className="flex-shrink-0 text-xs text-accent hover:underline">
+                        編集
+                    </button>
+                </div>
+            )}
 
             <div className="mb-1.5">
                 <span className={`inline-block rounded-full px-2.5 py-0.5 text-[11px] font-bold ${STATUS_BADGE_CLASS[status]}`}>{STATUS_LABEL[status]}</span>
