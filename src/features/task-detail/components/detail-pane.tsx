@@ -60,7 +60,8 @@ const isOverdue = (dueDate: string): boolean => {
  *
  * タイトル・状態・期日・完了日時を表示し、blocked の場合は BlockedReasonBar を表示する
  * description はプレビュー (MarkdownPreview) / 編集 (MarkdownEditor) を切り替え、
- * 編集確定で updateTask を呼んで保存する (失敗時はインラインでエラーを表示する)
+ * 期日は表示 / 編集 (input[type=date]) を切り替え、いずれも編集確定で updateTask を呼んで保存する
+ * (失敗時はインラインでエラーを表示する)
  */
 export const DetailPane = ({ task, allTasks, dependencies }: DetailPaneProps): JSX.Element => {
     // タスク切替時にのみ編集状態をリセットする (レンダー中の state 調整。React 公式の推奨パターンであり
@@ -70,6 +71,11 @@ export const DetailPane = ({ task, allTasks, dependencies }: DetailPaneProps): J
     const [isEditing, setIsEditing] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    // 期日編集の draft は input[type=date] の値そのもの (YYYY-MM-DD)。空文字は「期日なし」を表す
+    const [dueDateDraft, setDueDateDraft] = useState(task?.due_date ?? "");
+    const [isEditingDueDate, setIsEditingDueDate] = useState(false);
+    const [isSavingDueDate, setIsSavingDueDate] = useState(false);
+    const [dueDateError, setDueDateError] = useState<string | null>(null);
     const [dependencyError, setDependencyError] = useState<string | null>(null);
     const [removingDependencyId, setRemovingDependencyId] = useState<string | null>(null);
 
@@ -79,6 +85,9 @@ export const DetailPane = ({ task, allTasks, dependencies }: DetailPaneProps): J
         setDraft(task?.description ?? "");
         setIsEditing(false);
         setError(null);
+        setDueDateDraft(task?.due_date ?? "");
+        setIsEditingDueDate(false);
+        setDueDateError(null);
         setDependencyError(null);
     }
 
@@ -129,6 +138,37 @@ export const DetailPane = ({ task, allTasks, dependencies }: DetailPaneProps): J
         setError(result.message);
     };
 
+    const handleStartEditDueDate = (): void => {
+        setDueDateDraft(task.due_date ?? "");
+        setDueDateError(null);
+        setIsEditingDueDate(true);
+    };
+
+    const handleCancelEditDueDate = (): void => {
+        setDueDateDraft(task.due_date ?? "");
+        setDueDateError(null);
+        setIsEditingDueDate(false);
+    };
+
+    /**
+     * 期日を保存する
+     *
+     * input[type=date] はブラウザのローカルタイムゾーンでの YYYY-MM-DD を返すが、
+     * due_date は日付のみの概念 (req.md §6) なのでタイムゾーン変換せずそのまま渡す。
+     * 空文字 (クリアボタン押下、または入力欄を空にした状態) は null として期日を解除する
+     */
+    const handleSaveDueDate = async (): Promise<void> => {
+        setIsSavingDueDate(true);
+        setDueDateError(null);
+        const result = await updateTask({ taskId: task.id, dueDate: dueDateDraft === "" ? null : dueDateDraft });
+        setIsSavingDueDate(false);
+        if (result.ok) {
+            setIsEditingDueDate(false);
+            return;
+        }
+        setDueDateError(result.message);
+    };
+
     return (
         <div className="flex-1 overflow-y-auto p-4">
             {status === "blocked" ? <BlockedReasonBar task={task} allTasks={allTasks} dependencies={dependencies} /> : null}
@@ -139,12 +179,71 @@ export const DetailPane = ({ task, allTasks, dependencies }: DetailPaneProps): J
                 <span className={`inline-block rounded-full px-2.5 py-0.5 text-[11px] font-bold ${STATUS_BADGE_CLASS[status]}`}>{STATUS_LABEL[status]}</span>
             </div>
 
-            {task.due_date !== null ? (
-                <div className={`mb-1.5 text-xs ${overdue ? "font-semibold text-overdue" : "text-text-dim"}`}>
-                    期日: {formatDate(task.due_date)}
-                    {overdue ? " (期限切れ)" : ""}
+            <div className="mb-1.5">
+                <div className="flex items-center justify-between gap-2">
+                    {isEditingDueDate ? (
+                        <span className="text-xs text-text-dim">期日</span>
+                    ) : (
+                        <span className={`text-xs ${overdue ? "font-semibold text-overdue" : "text-text-dim"}`}>
+                            期日: {task.due_date !== null ? formatDate(task.due_date) : "未設定"}
+                            {overdue ? " (期限切れ)" : ""}
+                        </span>
+                    )}
+                    {isEditingDueDate ? null : (
+                        <button type="button" onClick={handleStartEditDueDate} className="text-xs text-accent hover:underline">
+                            編集
+                        </button>
+                    )}
                 </div>
-            ) : null}
+
+                {isEditingDueDate ? (
+                    <div className="mt-1.5 space-y-2">
+                        <div className="flex items-center gap-2">
+                            <input
+                                type="date"
+                                value={dueDateDraft}
+                                onChange={(event) => {
+                                    setDueDateDraft(event.target.value);
+                                }}
+                                disabled={isSavingDueDate}
+                                aria-label="期日を編集"
+                                className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-text outline-none focus:border-accent disabled:opacity-60"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setDueDateDraft("");
+                                }}
+                                disabled={isSavingDueDate || dueDateDraft === ""}
+                                className="rounded-md border border-border px-2 py-1 text-xs text-text-dim disabled:opacity-60"
+                            >
+                                クリア
+                            </button>
+                        </div>
+                        {dueDateError !== null ? <p className="text-xs text-overdue">{dueDateError}</p> : null}
+                        <div className="flex justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={handleCancelEditDueDate}
+                                disabled={isSavingDueDate}
+                                className="rounded-md border border-border px-3 py-1 text-xs text-text-dim disabled:opacity-60"
+                            >
+                                キャンセル
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    void handleSaveDueDate();
+                                }}
+                                disabled={isSavingDueDate}
+                                className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-bg disabled:opacity-60"
+                            >
+                                {isSavingDueDate ? "保存中…" : "保存"}
+                            </button>
+                        </div>
+                    </div>
+                ) : null}
+            </div>
 
             {task.completed_at !== null ? <div className="mb-1.5 text-xs text-text-dim">完了日時: {formatDateTime(task.completed_at)}</div> : null}
 
