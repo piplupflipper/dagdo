@@ -118,7 +118,8 @@ export const OutlineRow = ({ row, registerRow, isCursor, isVisualSelected, isFla
                     {isDone ? "✓" : task.is_blocked ? "🔒" : ""}
                 </button>
 
-                <span className={`min-w-[10em] flex-shrink-0 ${isDone ? "text-text-dim line-through" : "text-text"}`}>{task.title}</span>
+                {/* モバイル幅では固定幅だと行が画面幅を超えて横スクロールを生むため、縮小・省略を許す。md 以上は従来どおり縮まない */}
+                <span className={`min-w-0 flex-1 truncate md:min-w-[10em] md:flex-none ${isDone ? "text-text-dim line-through" : "text-text"}`}>{task.title}</span>
 
                 <span className="ml-auto flex flex-shrink-0 flex-wrap items-center justify-end gap-1">
                     {isDone ? (
