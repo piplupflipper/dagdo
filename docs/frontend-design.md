@@ -402,36 +402,43 @@ const useOutlineKeymap = (): void => {
 ```
 
 `isEditableTarget` は `event.target` が `input` / `textarea` / `contenteditable` 要素であるかを判定する util であり、`MarkdownEditor` や `SearchOverlay` の入力欄にフォーカスがある間はグローバル keymap を無効化する。
-`dispatchKeymap` はモードごとの対応表（第 6.1 節の 3 表）をそのままコードへ落とした関数であり、モード追加時にこの 1 箇所を変更すれば足りるようにする。
 
-`gg`（第 6.1 節）と既存の `dd`（第 6.1 節）は、いずれも同一キーの連続 2 打鍵で確定する操作であり、1 回の `keydown` だけでは確定可否を判定できない（確定事項）。
-これらは「pending key」方式で扱う。
-直前に押されたキーとその打鍵時刻を保持し、一定時間（提案: 500ms）以内に同一キーが再度押された場合にのみ操作を確定する。
-時間切れ、または別キーが割り込んだ場合は pending 状態を破棄し、新たなキー入力を pending として保持し直す。
+キーの一覧・説明・動作は宣言的テーブル `features/outline/lib/keymap-table.ts` を単一の正とする（確定事項）。
+第 6.1 節の 3 表がそのままエントリの配列になっており、dispatcher はこのテーブルから構築した trie だけを読む。
+テーブルに無いキーが処理されることはなく、ヘルプ表示もこのテーブルから生成する。
 
 ```typescript
-type PendingKey = {
-    key: "d" | "g";
-    timestampMs: number;
-};
-
-const PENDING_KEY_TIMEOUT_MS = 500;
-
-const pendingKeyRef = useRef<PendingKey | null>(null);
-
-const resolveDoubleTap = (key: "d" | "g", nowMs: number): boolean => {
-    const pending = pendingKeyRef.current;
-    if (pending !== null && pending.key === key && nowMs - pending.timestampMs <= PENDING_KEY_TIMEOUT_MS) {
-        pendingKeyRef.current = null;
-        return true;
-    }
-    pendingKeyRef.current = { key, timestampMs: nowMs };
-    return false;
+type KeymapEntry = {
+    keys: string; // スペース区切りのキーシーケンス表現（"j" / "g g" / "z a" / "C-d"）
+    mode: OutlineMode;
+    category: KeymapCategory; // ヘルプでのグルーピング用（移動 / 編集 / 構造変更 / 折りたたみ / モード）
+    description: string; // ヘルプ表示用の説明
+    run?: (context: KeymapContext) => void; // 省略時はヘルプにのみ表示する
 };
 ```
 
-pending key は UI 描画に影響しない値であるため、Zustand ストアには置かず、`use-outline-keymap.ts` 内部の `useRef` で保持する（確定事項）。
-ストアに置かない理由は、pending 状態の変化のたびにストア購読コンポーネントを再レンダリングする必要がなく、`dispatchKeymap` の呼び出し元（`useOutlineKeymap` 自身）だけが参照できれば足りるためである。
+`keys` の区切りをスペースにしているのは、`<` `>` のように単体でキーが割り当てられている文字をエスケープなしで書けるようにするため。
+修飾キーは基底キーの前へ `C-`（Control）/ `A-`（Alt）/ `M-`（Meta）を付ける。
+Shift は接頭辞にしない（`J` や `<` のように `event.key` へ既に反映されているため）。
+`run` を任意にしているのは、行内編集中の `Esc` / `Enter` のように「コンポーネント側のローカルハンドラが処理するが、ヘルプには載せたいキー」を同じテーブルへ含めるためである。
+
+`gg`（第 6.1 節）と `dd`（第 6.1 節）と `za`（第 6.1 節）は、1 回の `keydown` だけでは確定可否を判定できない（確定事項）。
+これらはテーブルの `keys` から構築した prefix tree（trie）で扱う（確定事項）。
+入力トークン列を trie の根から辿り、次の 3 通りに解決する。
+
+- 完全一致するエントリのノードに到達した: そのエントリの `run` を実行する
+- エントリのプレフィックスに一致した: 待機状態にして次のキーを待つ
+- どのエントリにも繋がらない: **その入力を破棄し**、待機状態を解除する
+
+待機のタイムアウトは 500ms とする（`PENDING_KEY_TIMEOUT_MS`）。
+時間切れ後の入力は、通常どおり先頭から解決し直す。
+
+3 番目の「破棄」は vim の挙動に倣ったものであり、プレフィックス待機中の未マッチキーが素通りする誤爆（`d` → `x` でタスクが完了し、続く `d` で削除まで走る）を防ぐ。
+破棄時は `preventDefault` しない。keymap に無いキー（`Ctrl+R` 等）のブラウザ既定動作を奪わないためである。
+
+trie の構築（`buildKeymapTries`）と 1 打鍵ぶんの待機状態遷移（`advanceKeySequence`）は `features/outline/lib/keymap-trie.ts` の純粋関数として実装し、DOM やタイマーに依存せず単体テストできるようにする。
+待機状態そのものは UI 描画に影響しない値であるため、Zustand ストアには置かず、`use-outline-keymap.ts` 内部の `useRef` で保持する（確定事項）。
+ストアに置かない理由は、待機状態の変化のたびにストア購読コンポーネントを再レンダリングする必要がなく、`useOutlineKeymap` 自身だけが参照できれば足りるためである。
 
 ---
 
@@ -690,7 +697,8 @@ DnD 操作の E2E は V1 のスコープに含めない（提案。dnd-kit の�
 | **依存レール** | アウトラインのガター（行頭余白）に描く git graph 風の SVG。タスク間の依存関係を縦方向のレーンとして表示する |
 | **ローカル DAG** | 右ペイン下部に常設する、カーソルタスクから ±2 ホップの範囲に限定した依存グラフ（DAG: Directed Acyclic Graph、有向非巡回グラフ）の可視化パネル |
 | **ビジュアルモード** | vim のビジュアルモードに倣った範囲選択モード。`V` で開始し、`j`/`k` で選択範囲を拡張する |
-| **pending key** | `gg` や `dd` のような連続 2 打鍵で確定する操作を判定するため、直前に押されたキーとその打鍵時刻を一時的に保持する仕組み。keymap フック（`use-outline-keymap.ts`）内部の `useRef` で保持し、Zustand ストアには置かない（第 6.2 節） |
+| **keymap テーブル** | キーの一覧・説明・動作を宣言的な配列で保持する単一の正（`features/outline/lib/keymap-table.ts`）。dispatcher もヘルプ表示もこのテーブルだけを読む（第 6.2 節） |
+| **pending key（待機状態）** | `gg` や `dd` のような複数打鍵で確定する操作を判定するため、プレフィックスまで一致したトークン列とその打鍵時刻を一時的に保持する仕組み。keymap フック（`use-outline-keymap.ts`）内部の `useRef` で保持し、Zustand ストアには置かない（第 6.2 節） |
 | **パレット層** | Tailwind v4 のテーマトークンにおいて、具体的な色の 16 進値を保持する `--palette-*` 層。将来のダークモード対応時にこの層の値を差し替える設計とする（第 10 章） |
 | **セマンティック層** | パレット層を参照し、用途（背景・テキスト・アクセント等）ごとの意味で名付けられた `--color-*` 層。コンポーネントは常にこの層のみを参照する（第 10 章） |
 | **blocked** | 未完了かつ未削除の依存先が 1 件以上存在する未完了タスクの状態。DB には保存されず `app_tasks` View で動的に算出する(req.md §12, §44) |
