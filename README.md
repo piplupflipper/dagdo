@@ -15,16 +15,17 @@ entodo は、アウトライナー形式 + vim ライクなキーボード操作
 Node.js は 22 系を使用する（`.node-version` 参照）。[mise](https://mise.jdx.dev/) 等のバージョンマネージャでのピン解決を推奨する。
 
 ```bash
-npm install
-npm run dev
+make setup   # 依存インストール + ローカル Supabase 起動 + DB 構築 + 型生成
+make fe-dev  # 開発サーバー起動
 ```
 
 `http://localhost:3000` を開く。
+GitHub ログインには OAuth App の設定が必要（[docs/github-oauth-setup.md](./docs/github-oauth-setup.md) 参照）。
 
-## 主なスクリプト
+## 主な操作
 
-- `npm run dev` — 開発サーバー起動
-- `npm run build` — 本番ビルド
-- `npm run start` — 本番サーバー起動
-- `npm run check` — biome check + tsc --noEmit + knip
-- `npm run format` — biome check --write
+操作はリポジトリルートの Makefile に集約している。一覧は `make help`。
+
+- `make fe-dev` / `make fe-build` / `make fe-check` / `make fe-format` — Next.js アプリ
+- `make db-start` / `make db-reset` / `make db-test` / `make db-types` — ローカル Supabase
+- `make check` — 全品質ゲート（fe-check + db-test）
