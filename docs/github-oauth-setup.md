@@ -96,6 +96,11 @@ Application description は任意項目であり、entodo の運用上は必須�
 OAuth App の作成後、詳細画面に **Client ID** が表示される。
 この値をそのまま控える。
 
+OAuth App の Client ID は 20 桁の英数字である。
+`Iv` で始まる Client ID (例: `Iv1.` / `Iv2` 始まり) は **GitHub App** のものであり、本手順書が前提とする OAuth App とは別物である。
+GitHub の Developer settings では「GitHub Apps」と「OAuth Apps」が隣接したメニューにあるため、作成先を誤りやすい。
+`Iv` 始まりの Client ID を控えていた場合は、OAuth Apps 側で作成し直す (第8章のトラブルシューティングも参照)。
+
 ### 4.2 Client Secret の生成
 
 同じ詳細画面の **Generate a new client secret** ボタンから Client Secret を生成する。
@@ -190,6 +195,7 @@ Vercel のデプロイ先ドメイン（カスタムドメインを含む）を�
 | 症状 | 原因 | 対処 |
 |---|---|---|
 | GitHub の認可画面、またはコールバック後に `redirect_uri mismatch` エラーが表示される | OAuth App の Authorization callback URL と、実際にアクセスしているホストが一致していない | 該当環境（dev / prod）の OAuth App の Authorization callback URL を、実際のホストに合わせて修正する（第3.2節・第7.3節） |
+| ログインボタンから GitHub へ遷移すると GitHub 側で 404 になる | `client_id` が authorize エンドポイントで受理されていない。典型的には OAuth App ではなく **GitHub App** を作成しており（Client ID が `Iv` 始まり、第4.1節）、GitHub App 側のユーザー認可 (Callback URL) が未構成 | OAuth Apps 側で作成し直して Client ID / Secret を差し替える（推奨）。GitHub App を使い続ける場合は App 設定の Identifying and authorizing users で Callback URL を設定する |
 | ログイン試行後、GitHub の認可画面まで進まず認証エラーになる | `AUTH_GITHUB_ID` または `AUTH_GITHUB_SECRET` が誤っている、または未設定 | `.env.local`（dev）または Vercel の環境変数（prod）の値を、対応する OAuth App の Client ID / Client Secret と照合する |
 | GitHub での認可後、entodo 側で 500 エラーになる | `next_auth` schema が Supabase の Data API に公開されていない、または `SUPABASE_SECRET_KEY` が誤っている | `docs/auth-design.md` §4.3 の exposed schemas 設定を確認する。あわせて `SUPABASE_SECRET_KEY` の値を確認する |
 | ログアウトしたはずのアカウントで再度ログインすると、以前のセッションのまま挙動する | ブラウザにセッション cookie が残っている | シークレットウィンドウ（プライベートブラウジング）で動作確認する |
