@@ -17,6 +17,7 @@ import { reorderTasks } from "@/features/task/actions/reorder-tasks";
 import { softDeleteTask } from "@/features/task/actions/soft-delete-task";
 import type { ActionResult, TaskErrorCode } from "@/features/task/lib/action-result";
 import { DetailPane, type DetailPaneHandle } from "@/features/task-detail/components/detail-pane";
+import { MobileDetailSheet } from "@/features/task-detail/components/mobile-detail-sheet";
 import { useOutlineStore } from "@/store/outline-store";
 import type { AppTask, TaskDependency } from "@/types/task";
 
@@ -309,26 +310,28 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                 <button
                     type="button"
                     onClick={() => useOutlineStore.getState().enterSearch()}
-                    className="flex min-w-[200px] items-center gap-1.5 rounded-base border border-border bg-bg px-2.5 py-1.5 text-left text-xs text-text-dim"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 rounded-base border border-border bg-bg px-2.5 py-1.5 text-left text-xs text-text-dim md:min-w-[200px] md:flex-initial"
                 >
                     <span aria-hidden="true">⌕</span>
-                    <span>/ で検索欄を開く</span>
+                    <span className="truncate">/ で検索欄を開く</span>
                 </button>
                 <button
                     type="button"
                     onClick={() => (mode === "VISUAL" ? exitVisual() : useOutlineStore.getState().enterVisual())}
-                    className="rounded-base border border-border px-2.5 py-1.5 text-xs text-accent hover:bg-accent/10"
+                    className="flex-shrink-0 rounded-base border border-border px-2.5 py-1.5 text-xs text-accent hover:bg-accent/10"
                 >
                     V ビジュアル
                 </button>
-                <button type="button" onClick={createBelowCursor} className="rounded-base border border-border px-2.5 py-1.5 text-xs text-accent hover:bg-accent/10">
+                <button type="button" onClick={createBelowCursor} className="flex-shrink-0 rounded-base border border-border px-2.5 py-1.5 text-xs text-accent hover:bg-accent/10">
                     + 新規タスク
                 </button>
-                <span className="ml-auto text-[11px] text-text-dim">j k 移動・x 完了・V 範囲選択・/ 検索</span>
+                {/* キーボード操作のヒントはモバイル幅では意味がなく、横幅も圧迫するため md 以上でのみ表示する */}
+                <span className="ml-auto hidden text-[11px] text-text-dim md:inline">j k 移動・x 完了・V 範囲選択・/ 検索</span>
             </div>
 
+            {/* PC 幅は 2 ペイン、モバイル幅は左ペイン全幅 + MobileDetailSheet。切り替えは Tailwind のブレークポイントのみで行う */}
             <div className="flex min-h-0 flex-1">
-                <div className="flex min-w-0 flex-[0_0_60%] flex-col border-r border-border">
+                <div className="flex min-w-0 flex-1 flex-col border-border md:flex-[0_0_60%] md:border-r">
                     <OutlinePane
                         visibleRows={visibleRows}
                         tasks={optimisticTasks}
@@ -344,11 +347,13 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                     />
                     <StatusLine mode={mode} cursorTask={cursorTask} totalCount={optimisticTasks.length} blockedCount={blockedCount} infoMessage={statusMessage} errorMessage={statusError} />
                 </div>
-                <div className="flex min-w-0 flex-1 flex-col bg-bg-alt">
+                <div className="hidden min-w-0 flex-1 flex-col bg-bg-alt md:flex">
                     <DetailPane ref={detailPaneRef} task={cursorTask} allTasks={optimisticTasks} dependencies={dependencies} />
                     <DagPanel centerTaskId={cursorTaskId} tasks={optimisticTasks} dependencies={dependencies} flashTaskId={flashTaskId} />
                 </div>
             </div>
+
+            <MobileDetailSheet task={cursorTask} allTasks={optimisticTasks} dependencies={dependencies} flashTaskId={flashTaskId} onClose={() => setCursor(null)} />
 
             <SearchOverlay />
         </div>
