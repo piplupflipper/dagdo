@@ -20,6 +20,7 @@ const EXPECTED_KEYS: readonly string[] = [
     "NORMAL z a",
     "NORMAL V",
     "NORMAL /",
+    "NORMAL ?",
     "VISUAL j",
     "VISUAL k",
     "VISUAL x",
@@ -36,6 +37,8 @@ const createHandlerSpies = (): OutlineKeymapHandlers => ({
     indentCursor: vi.fn(),
     outdentCursor: vi.fn(),
     softDeleteCursor: vi.fn(),
+    openHelp: vi.fn(),
+    closeHelp: vi.fn(),
 });
 
 const findEntry = (mode: OutlineMode, keys: string): KeymapEntry => {
@@ -74,6 +77,7 @@ describe("handlers を呼ぶエントリ", () => {
         { mode: "NORMAL", keys: "<", handler: "outdentCursor", args: [] },
         { mode: "NORMAL", keys: ">", handler: "indentCursor", args: [] },
         { mode: "VISUAL", keys: "x", handler: "completeSelection", args: [] },
+        { mode: "NORMAL", keys: "?", handler: "openHelp", args: [] },
     ];
 
     it.each(cases)("$mode の $keys は $handler だけを呼ぶ", ({ mode, keys, handler, args }) => {
