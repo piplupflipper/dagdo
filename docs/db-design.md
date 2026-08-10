@@ -921,9 +921,21 @@ cycle検出ロジックをRPCとTriggerで重複させず、不変条件はTrigg
 
 入力イメージは`parent_id`と`ordered_task_ids[]`である(req.md §55)。
 
-指定されたactual sibling groupについて、`position = 0, 1, 2, ...`と再採番する(req.md §55)。
+並べ替えの対象は、指定されたactual sibling groupのうち論理削除されていないタスクのみとする。
+対象が現在占めている`position`の集合をそのまま使い回し、`ordered_task_ids[]`の順に昇順で割り当てる。
+論理削除済みタスクの`position`は変更しない。
 
-対象が同一ユーザーかつ同一actual parentであることを検証する(req.md §55)。
+論理削除済みタスクが存在しない場合、占めている`position`の集合は`0, 1, 2, ...`となるため、結果はreq.md §55の「`position = 0, 1, 2, ...`と再採番する」と一致する(req.md §55)。
+差が生じるのは論理削除済みタスクが同一sibling groupに残っている場合に限られ、req.md §55はこのケースを規定していない。
+
+論理削除済みタスクを対象から外すのは、クライアントが`app_tasks` View経由で可視のタスクしか列挙できないためである(10.1節)。
+削除済みを含めて件数を検証すると、ゴミ箱にタスクがあるsibling groupでは並べ替えが常に失敗する。
+
+対象が現在占めている`position`をそのまま使い回すのは、「actual sibling groupの`position`は論理削除済みを含めて0から連番で連続する」という不変条件を保つためである。
+この不変条件は`move_task`の±1シフトと、新規作成時の末尾採番が前提としている。
+
+対象が同一ユーザーかつ同一actual parentであり、かつ論理削除されていないことを検証する(req.md §55)。
+`ordered_task_ids[]`に重複が含まれる場合も検証で弾く。同一タスクへ複数の`position`を割り当てて連番を壊すことを防ぐためである。
 
 ### 12.4 restore_task
 
