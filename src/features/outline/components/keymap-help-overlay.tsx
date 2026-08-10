@@ -61,14 +61,14 @@ export const KeymapHelpOverlay = ({ isOpen, onClose }: KeymapHelpOverlayProps): 
     }
 
     return (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-text/25 p-4 md:p-8">
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-overlay p-4 backdrop-blur-sm md:p-8">
             <div
                 ref={dialogRef}
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby={TITLE_ID}
                 tabIndex={-1}
-                className="w-full max-w-3xl rounded-base border border-border bg-bg font-mono text-sm text-text shadow-sm outline-none"
+                className="w-full max-w-3xl rounded-base border border-border bg-bg font-mono text-sm text-text shadow-xl backdrop-blur-xl outline-none"
             >
                 <div className="flex items-center gap-2 border-b border-border bg-bg-alt px-3.5 py-2">
                     <h2 id={TITLE_ID} className="text-[13px] font-semibold">

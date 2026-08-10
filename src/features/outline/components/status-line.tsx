@@ -30,7 +30,7 @@ export const StatusLine = ({ mode, cursorTask, totalCount, blockedCount, infoMes
     const displayMessage = errorMessage ?? infoMessage ?? cursorInfo;
 
     return (
-        <div className="flex flex-shrink-0 items-center gap-3 border-t border-border bg-bg-alt px-3.5 py-1.5 font-mono text-[11.5px] text-text-dim">
+        <div className="flex flex-shrink-0 items-center gap-3 border-t border-border bg-bg-alt px-3.5 py-1.5 font-mono text-[11.5px] text-text-dim backdrop-blur-xl">
             <span className={`flex-shrink-0 rounded px-1.5 py-0.5 text-[10.5px] font-bold tracking-wide ${mode === "NORMAL" ? "bg-accent/10 text-accent" : "bg-blocked/10 text-blocked"}`}>
                 {MODE_LABEL[mode]}
             </span>

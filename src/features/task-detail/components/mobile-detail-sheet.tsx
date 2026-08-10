@@ -38,12 +38,12 @@ export const MobileDetailSheet = ({ task, allTasks, dependencies, flashTaskId, i
                 type="button"
                 aria-label="詳細を閉じる"
                 onClick={onClose}
-                className={`absolute inset-0 h-full w-full cursor-default bg-text/25 transition-opacity duration-200 ${isOpen ? "opacity-100" : "opacity-0"}`}
+                className={`absolute inset-0 h-full w-full cursor-default bg-overlay transition-opacity duration-200 ${isOpen ? "opacity-100" : "opacity-0"}`}
             />
 
             <section
                 aria-label="タスク詳細"
-                className={`absolute inset-x-0 bottom-0 flex max-h-[80dvh] flex-col rounded-t-xl border-t border-border bg-bg-alt shadow-lg transition-transform duration-200 ${
+                className={`absolute inset-x-0 bottom-0 flex max-h-[80dvh] flex-col rounded-t-xl border-t border-border bg-bg-alt shadow-lg backdrop-blur-xl transition-transform duration-200 ${
                     isOpen ? "translate-y-0" : "translate-y-full"
                 }`}
             >

@@ -15,10 +15,7 @@ export const LoginButton = (): ReactNode => {
 
     return (
         <form action={handleLogin}>
-            <button
-                type="submit"
-                className="rounded-[var(--radius-base)] border border-[var(--color-border)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-[var(--color-bg)] transition-shadow hover:shadow-sm"
-            >
+            <button type="submit" className="rounded-base border border-border bg-accent px-4 py-2 text-sm font-medium text-accent-ink transition-colors hover:bg-accent-strong">
                 GitHub でログイン
             </button>
         </form>

@@ -47,7 +47,7 @@ export const SearchOverlay = (): JSX.Element | null => {
     };
 
     return (
-        <div className="fixed inset-x-0 bottom-0 z-50 flex items-center gap-2 border-t border-border bg-bg px-3 py-2 font-mono text-sm text-text shadow-sm">
+        <div className="fixed inset-x-0 bottom-0 z-50 flex items-center gap-2 border-t border-border bg-bg px-3 py-2 font-mono text-sm text-text shadow-lg backdrop-blur-xl">
             <span className="text-accent" aria-hidden="true">
                 /
             </span>

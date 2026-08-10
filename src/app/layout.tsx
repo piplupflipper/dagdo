@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { NightSkyBackground } from "@/components/background/night-sky-background";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -13,7 +14,10 @@ export const metadata: Metadata = {
 const RootLayout = ({ children }: LayoutProps<"/">): ReactNode => {
     return (
         <html lang="ja">
-            <body>{children}</body>
+            <body>
+                <NightSkyBackground />
+                <div className="relative z-10">{children}</div>
+            </body>
         </html>
     );
 };

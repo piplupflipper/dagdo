@@ -386,7 +386,7 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
                                 void handleSaveTitle();
                             }}
                             disabled={isSavingTitle}
-                            className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-bg disabled:opacity-60"
+                            className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-accent-ink disabled:opacity-60"
                         >
                             {isSavingTitle ? "保存中…" : "保存"}
                         </button>
@@ -462,7 +462,7 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
                                     void handleSaveDueDate();
                                 }}
                                 disabled={isSavingDueDate}
-                                className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-bg disabled:opacity-60"
+                                className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-accent-ink disabled:opacity-60"
                             >
                                 {isSavingDueDate ? "保存中…" : "保存"}
                             </button>
@@ -557,7 +557,7 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
                                     void handleSave();
                                 }}
                                 disabled={isSaving}
-                                className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-bg disabled:opacity-60"
+                                className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-accent-ink disabled:opacity-60"
                             >
                                 {isSaving ? "保存中…" : "保存"}
                             </button>

@@ -1,17 +1,26 @@
 @import "tailwindcss";
 
 :root {
-    /* パレット層 (docs/frontend-design.md §10): 確定済みパレット値を保持する。コンポーネントから直接参照しない */
-    --palette-bg: #ffffff;
-    --palette-bg-alt: #eef1f5;
-    --palette-bg-sunken: #e3e7ee;
-    --palette-text: #1b2433;
-    --palette-text-dim: #5b6472;
-    --palette-border: #dde2ea;
-    --palette-accent: #2454c9;
-    --palette-blocked: #b45309;
-    --palette-overdue: #dc2626;
-    --palette-done: #97a1b0;
+    color-scheme: dark;
+    /* パレット層 (docs/frontend-design.md §10): 固定ダークテーマの具体値を保持する。コンポーネントから直接参照しない */
+    --palette-page-bg: #090d1b;
+    --palette-bg: rgba(15, 21, 42, 0.86);
+    --palette-bg-alt: rgba(21, 29, 55, 0.72);
+    --palette-bg-sunken: rgba(9, 13, 27, 0.76);
+    --palette-text: #eef1fa;
+    --palette-text-dim: #aab3cc;
+    --palette-border: rgba(185, 200, 242, 0.17);
+    --palette-accent: #b9c8f2;
+    --palette-accent-strong: #dbe3fb;
+    --palette-accent-ink: #090d1b;
+    --palette-blocked: #dcb15f;
+    --palette-overdue: #ff8f8f;
+    --palette-done: #7f89a4;
+    --palette-overlay: rgba(0, 0, 0, 0.5);
+    --night-sky-c1: #b9c8f2;
+    --night-sky-c2: #6e7fbf;
+    --night-sky-c3: #4a5aa0;
+    --night-sky-c4: #33406e;
 }
 
 @theme inline {
@@ -19,8 +28,9 @@
      * セマンティック層 (docs/frontend-design.md §10): 用途名でパレット層を参照する
      * コンポーネントは常にこのセマンティック層 (--color-*, --radius-base) のみを参照し、
      * パレット層 (--palette-*) や生の16進値を直接参照してはならない
-     * 将来のダークモード対応時はパレット層側の値のみを差し替える
+     * テーマ切替は行わず、このセマンティック層を固定ダークパレットへ接続する
      */
+    --color-page-bg: var(--palette-page-bg);
     --color-bg: var(--palette-bg);
     --color-bg-alt: var(--palette-bg-alt);
     --color-bg-sunken: var(--palette-bg-sunken);
@@ -28,13 +38,171 @@
     --color-text-dim: var(--palette-text-dim);
     --color-border: var(--palette-border);
     --color-accent: var(--palette-accent);
+    --color-accent-strong: var(--palette-accent-strong);
+    --color-accent-ink: var(--palette-accent-ink);
     --color-blocked: var(--palette-blocked);
     --color-overdue: var(--palette-overdue);
     --color-done: var(--palette-done);
+    --color-overlay: var(--palette-overlay);
     --radius-base: 6px;
 }
 
+html {
+    min-width: 320px;
+    background: var(--color-page-bg);
+}
+
 body {
-    background: var(--color-bg);
+    min-width: 320px;
+    background: transparent;
     color: var(--color-text);
+}
+
+a,
+button,
+input,
+textarea,
+select {
+    outline-color: var(--color-accent);
+}
+
+/* mdblog-nextjs と同じ夜空のクラウドフィールド。WebGL 初期化前と非対応環境では CSS の雲を表示する */
+.night-sky {
+    position: fixed;
+    z-index: 0;
+    inset: 0;
+    overflow: hidden;
+    background: linear-gradient(
+        165deg,
+        color-mix(in srgb, var(--night-sky-c4) 30%, var(--color-page-bg)) 0%,
+        var(--color-page-bg) 52%,
+        color-mix(in srgb, var(--night-sky-c3) 18%, var(--color-page-bg)) 100%
+    );
+    pointer-events: none;
+}
+
+.night-sky-cloud {
+    position: absolute;
+    width: min(105vw, 90rem);
+    height: min(48vw, 38rem);
+    border-radius: 50%;
+    filter: blur(92px);
+    mix-blend-mode: screen;
+    will-change: transform, opacity;
+}
+
+.night-sky-cloud-a {
+    top: -20%;
+    left: -28%;
+    opacity: 0.52;
+    background: radial-gradient(ellipse, var(--night-sky-c1) 0%, color-mix(in srgb, var(--night-sky-c2) 58%, transparent) 43%, transparent 72%);
+    animation: night-sky-drift-a 44s ease-in-out infinite alternate;
+}
+
+.night-sky-cloud-b {
+    top: 8%;
+    right: -32%;
+    opacity: 0.48;
+    background: radial-gradient(ellipse, var(--night-sky-c2) 0%, color-mix(in srgb, var(--night-sky-c3) 62%, transparent) 48%, transparent 74%);
+    animation: night-sky-drift-b 54s ease-in-out infinite alternate;
+}
+
+.night-sky-cloud-c {
+    top: 42%;
+    left: -24%;
+    opacity: 0.38;
+    background: radial-gradient(ellipse, var(--night-sky-c2) 0%, color-mix(in srgb, var(--night-sky-c4) 54%, transparent) 47%, transparent 76%);
+    animation: night-sky-drift-c 60s ease-in-out infinite alternate;
+}
+
+.night-sky-cloud-d {
+    right: -18%;
+    bottom: -22%;
+    opacity: 0.42;
+    background: radial-gradient(ellipse, var(--night-sky-c1) 0%, color-mix(in srgb, var(--night-sky-c3) 58%, transparent) 42%, transparent 72%);
+    animation: night-sky-drift-d 50s ease-in-out infinite alternate;
+}
+
+.night-sky-canvas {
+    position: absolute;
+    display: block;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 300ms ease;
+}
+
+.night-sky-canvas-ready {
+    opacity: 1;
+}
+
+.night-sky-webgl-ready .night-sky-cloud {
+    display: none;
+    animation: none;
+}
+
+.night-sky-grain {
+    position: absolute;
+    inset: 0;
+    opacity: 0.045;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.86' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.62'/%3E%3C/svg%3E");
+    mix-blend-mode: soft-light;
+}
+
+@keyframes night-sky-drift-a {
+    to {
+        opacity: 0.38;
+        transform: translate3d(28%, 14%, 0) scale(1.12);
+    }
+}
+
+@keyframes night-sky-drift-b {
+    to {
+        opacity: 0.36;
+        transform: translate3d(-30%, 18%, 0) scale(1.08);
+    }
+}
+
+@keyframes night-sky-drift-c {
+    to {
+        opacity: 0.5;
+        transform: translate3d(32%, -12%, 0) scale(1.16);
+    }
+}
+
+@keyframes night-sky-drift-d {
+    to {
+        opacity: 0.3;
+        transform: translate3d(-26%, -16%, 0) scale(1.1);
+    }
+}
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--color-text-dim) 55%, transparent);
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--color-text-dim);
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .night-sky-cloud {
+        animation: none;
+    }
+
+    .night-sky-canvas {
+        transition: none;
+    }
 }
