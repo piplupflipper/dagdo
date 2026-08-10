@@ -134,7 +134,7 @@ export const OutlineRow = ({
                         onToggleDone(task);
                     }}
                     className={`flex h-[19px] w-[19px] flex-shrink-0 items-center justify-center rounded-full border text-[10px] ${
-                        isDone ? "border-accent bg-accent text-bg" : task.is_blocked ? "border-blocked text-blocked" : "border-border bg-bg"
+                        isDone ? "border-accent bg-accent text-accent-ink" : task.is_blocked ? "border-blocked text-blocked" : "border-border bg-bg"
                     }`}
                     aria-label={!isDone && task.is_blocked ? "完了を切替(ブロック中)" : "完了を切替"}
                 >

@@ -432,7 +432,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     });
 
     return (
-        <div className="flex h-dvh flex-col bg-bg text-text">
+        <div className="flex h-dvh flex-col text-text">
             {/*
              * ヘルプ表示中の背面は inert にする (MobileDetailSheet が閉じている間と同じ道具)
              *
@@ -444,7 +444,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
              * SearchOverlay は mode === "SEARCH" のときだけ描画されるが、? は NORMAL のエントリで、
              * SEARCH へ入る導線 (`/` とヘッダの検索ボタン) は表示中どちらも封じられるため対象外でよい
              */}
-            <div className="flex flex-shrink-0 items-center gap-2 border-b border-border bg-bg-alt px-3.5 py-2" inert={isHelpOpen}>
+            <div className="flex flex-shrink-0 items-center gap-2 border-b border-border bg-bg-alt px-3.5 py-2 backdrop-blur-xl" inert={isHelpOpen}>
                 <button
                     type="button"
                     onClick={() => useOutlineStore.getState().enterSearch()}
@@ -488,7 +488,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                     />
                     <StatusLine mode={mode} cursorTask={cursorTask} totalCount={optimisticTasks.length} blockedCount={blockedCount} infoMessage={statusMessage} errorMessage={statusError} />
                 </div>
-                <div className="hidden min-w-0 flex-1 flex-col bg-bg-alt md:flex">
+                <div className="hidden min-w-0 flex-1 flex-col bg-bg-alt backdrop-blur-sm md:flex">
                     <DetailPane ref={detailPaneRef} task={cursorTask} allTasks={optimisticTasks} dependencies={dependencies} />
                     <DagPanel centerTaskId={cursorTaskId} tasks={optimisticTasks} dependencies={dependencies} flashTaskId={flashTaskId} />
                 </div>

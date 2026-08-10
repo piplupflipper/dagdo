@@ -56,7 +56,7 @@ export const TrashRow = ({ task }: TrashRowProps): JSX.Element => {
     };
 
     return (
-        <div className="flex items-center gap-3 rounded-base border border-border bg-bg px-3 py-2 text-sm">
+        <div className="flex items-center gap-3 rounded-base border border-border bg-bg px-3 py-2 text-sm backdrop-blur-sm">
             <div className="min-w-0 flex-1">
                 <p className="truncate text-text">{task.title}</p>
                 <p className="text-[11px] text-text-dim">削除日時: {task.deleted_at !== null ? formatDeletedAt(task.deleted_at) : "-"}</p>

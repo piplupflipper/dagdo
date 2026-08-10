@@ -95,7 +95,7 @@ export const OutlinePane = ({
     };
 
     return (
-        <div ref={containerRef} className="flex min-h-0 flex-1 overflow-y-auto bg-bg" data-role="outline-scroll">
+        <div ref={containerRef} className="flex min-h-0 flex-1 overflow-y-auto bg-bg backdrop-blur-sm" data-role="outline-scroll">
             <DependencyRail containerRef={containerRef} rowMapRef={rowMapRef} visibleTaskIds={visibleTaskIds} dependencies={dependencies} tasksById={tasksById} cursorTaskId={cursorTaskId} />
             <DndContext id={DND_CONTEXT_ID} sensors={sensors} onDragEnd={handleDragEnd}>
                 <SortableContext items={dndItems.map((item) => item.id)} strategy={verticalListSortingStrategy}>

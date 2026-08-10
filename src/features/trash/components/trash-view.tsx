@@ -17,8 +17,8 @@ export type TrashViewProps = {
  */
 export const TrashView = ({ tasks }: TrashViewProps): JSX.Element => {
     return (
-        <div className="flex h-dvh flex-col bg-bg text-text">
-            <div className="flex flex-shrink-0 items-center gap-3 border-b border-border bg-bg-alt px-3.5 py-2">
+        <div className="flex h-dvh flex-col text-text">
+            <div className="flex flex-shrink-0 items-center gap-3 border-b border-border bg-bg-alt px-3.5 py-2 backdrop-blur-xl">
                 <Link href="/" className="text-xs text-accent hover:underline">
                     ← アウトラインへ戻る
                 </Link>

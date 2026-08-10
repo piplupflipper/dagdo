@@ -27,7 +27,7 @@ export const DagPanel = ({ centerTaskId, tasks, dependencies, flashTaskId }: Dag
     const subgraph = centerTaskId !== null ? computeLocalSubgraph({ centerTaskId, dependencies }) : null;
 
     return (
-        <div className="flex h-[220px] shrink-0 flex-col border-t border-border bg-bg-alt">
+        <div className="flex h-[220px] shrink-0 flex-col border-t border-border bg-bg-sunken">
             <div className="shrink-0 px-3.5 pt-2 pb-0.5 text-[11.5px] text-text-dim">
                 依存グラフ <span className="opacity-65">(選択タスク中心 ±2 ホップ)</span>
             </div>
