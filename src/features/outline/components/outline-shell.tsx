@@ -6,12 +6,13 @@ import { KeymapHelpOverlay } from "@/features/outline/components/keymap-help-ove
 import { OutlinePane } from "@/features/outline/components/outline-pane";
 import { StatusLine } from "@/features/outline/components/status-line";
 import { useOutlineKeymap } from "@/features/outline/hooks/use-outline-keymap";
-import { buildOutlineTree, deriveVisibleRows } from "@/features/outline/lib/build-tree";
+import { buildOutlineTree, collectCollapsibleTaskIds, deriveVisibleRows } from "@/features/outline/lib/build-tree";
 import {
     computeCreatePosition,
     computeIndent,
     computeOutdent,
     computeSiblingSwap,
+    findSiblingTaskId,
     type ReparentResult,
     type SiblingPlacement,
     type SiblingReorderResult,
@@ -143,6 +144,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     const setVisibleTaskIds = useOutlineStore((state) => state.setVisibleTaskIds);
     const setCursor = useOutlineStore((state) => state.setCursor);
     const toggleCollapsed = useOutlineStore((state) => state.toggleCollapsed);
+    const collapseAllTasks = useOutlineStore((state) => state.collapseAll);
     const flashTask = useOutlineStore((state) => state.flashTask);
     const exitVisual = useOutlineStore((state) => state.exitVisual);
 
@@ -167,6 +169,15 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                   return rows.filter((row) => matchedIds.has(row.task.id));
               })();
     const visibleTaskIdList = visibleRows.map((row) => row.task.id);
+
+    // 編集中の行が表示行の集合から消えた場合も行内編集を畳む (`zM` / `zc` による折りたたみ、検索の絞り込み、他経路での削除)。
+    // 上のカーソル移動による解除と同じくレンダー中の state 調整で行う。
+    // キー経由でここに来ることはない (編集中はフォーカスが input にあり dispatcher が isEditableTarget で素通しする) が、
+    // 行の折りたたみボタンのクリックのようにキーボード以外の経路で表示行が変わったとき、
+    // input が unmount されたまま inlineTitleEdit だけが残るのを防ぐ
+    if (inlineTitleEdit !== null && !visibleTaskIdList.includes(inlineTitleEdit.taskId)) {
+        setInlineTitleEdit(null);
+    }
 
     useEffect(() => {
         setVisibleTaskIds(visibleTaskIdList);
@@ -296,6 +307,33 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         detailPaneRef.current?.focusEditor();
     };
 
+    /**
+     * `{` / `}`。同じ actual parent の 1 つ前 / 後の兄弟へカーソルを移す
+     *
+     * 端の兄弟にいるときは動かさない (`j` / `k` が端で留まるのと揃える)
+     */
+    const jumpToSibling = (direction: "up" | "down"): void => {
+        if (cursorTaskId === null) {
+            return;
+        }
+        const siblingTaskId = findSiblingTaskId({ tasks: optimisticTasks, taskId: cursorTaskId, direction });
+        if (siblingTaskId === null) {
+            return;
+        }
+        setCursor(siblingTaskId);
+    };
+
+    /**
+     * `zM`。子を持つ行をすべて折りたたむ
+     *
+     * 対象 ID の算出をここで行い、ストアへは ID の集合だけを渡す。ストアの visibleTaskIds は depth も parent_id も持たず
+     * 「子を持つ行」を判定できないためで、ストアへ木構造を複製しないための分担である (docs/frontend-design.md §5.2)。
+     * 対になる `zR` がストアのアクション (expandAll) だけで完結するのと非対称なのはこの理由による
+     */
+    const collapseAll = (): void => {
+        collapseAllTasks(collectCollapsibleTaskIds(rows));
+    };
+
     const moveCursorSibling = (direction: "up" | "down"): void => {
         if (cursorTaskId === null) {
             return;
@@ -381,6 +419,8 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
             createSibling,
             startInlineTitleEdit,
             focusDetailEditor,
+            jumpToSibling,
+            collapseAll,
             moveCursorSibling,
             indentCursor,
             outdentCursor,

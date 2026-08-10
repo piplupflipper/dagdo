@@ -13,6 +13,10 @@ const EXPECTED_KEYS: readonly string[] = [
     "NORMAL 移動 k",
     "NORMAL 移動 g g",
     "NORMAL 移動 G",
+    "NORMAL 移動 {",
+    "NORMAL 移動 }",
+    "NORMAL 移動 C-d",
+    "NORMAL 移動 C-u",
     "NORMAL 編集 x",
     "NORMAL 編集 o",
     "NORMAL 編集 O",
@@ -27,6 +31,10 @@ const EXPECTED_KEYS: readonly string[] = [
     "NORMAL 構造変更 <",
     "NORMAL 構造変更 >",
     "NORMAL 折りたたみ z a",
+    "NORMAL 折りたたみ z o",
+    "NORMAL 折りたたみ z c",
+    "NORMAL 折りたたみ z R",
+    "NORMAL 折りたたみ z M",
     "NORMAL モード V",
     "NORMAL モード /",
     "NORMAL ヘルプ ?",
@@ -48,6 +56,8 @@ const createHandlerSpies = (): OutlineKeymapHandlers => ({
     createSibling: vi.fn(),
     startInlineTitleEdit: vi.fn(),
     focusDetailEditor: vi.fn(),
+    jumpToSibling: vi.fn(),
+    collapseAll: vi.fn(),
     moveCursorSibling: vi.fn(),
     indentCursor: vi.fn(),
     outdentCursor: vi.fn(),
@@ -113,6 +123,9 @@ describe("handlers を呼ぶエントリ", () => {
         { mode: "NORMAL", keys: "A", handler: "startInlineTitleEdit", args: ["end"] },
         { mode: "NORMAL", keys: "Enter", handler: "focusDetailEditor", args: [] },
         { mode: "NORMAL", keys: "d d", handler: "softDeleteCursor", args: [] },
+        { mode: "NORMAL", keys: "{", handler: "jumpToSibling", args: ["up"] },
+        { mode: "NORMAL", keys: "}", handler: "jumpToSibling", args: ["down"] },
+        { mode: "NORMAL", keys: "z M", handler: "collapseAll", args: [] },
         { mode: "NORMAL", keys: "J", handler: "moveCursorSibling", args: ["down"] },
         { mode: "NORMAL", keys: "K", handler: "moveCursorSibling", args: ["up"] },
         { mode: "NORMAL", keys: "<", handler: "outdentCursor", args: [] },
@@ -159,6 +172,30 @@ describe("ストアを直接操作するエントリ", () => {
         expect(useOutlineStore.getState().cursorTaskId).toBe("c");
     });
 
+    it("NORMAL の C-d / C-u がカーソルを 10 行下 / 上へ移動する", () => {
+        // 0..24 の 25 行。10 行ずつ動くことを添字で確かめる
+        const ids = Array.from({ length: 25 }, (_, index) => `row-${index}`);
+        useOutlineStore.setState({ visibleTaskIds: ids, cursorTaskId: "row-5" });
+
+        runEntry("NORMAL", "C-d");
+        expect(useOutlineStore.getState().cursorTaskId).toBe("row-15");
+        runEntry("NORMAL", "C-u");
+        expect(useOutlineStore.getState().cursorTaskId).toBe("row-5");
+    });
+
+    it("NORMAL の C-d / C-u は行数が足りなければ末尾行 / 先頭行で留まる", () => {
+        runEntry("NORMAL", "C-d");
+        expect(useOutlineStore.getState().cursorTaskId).toBe("c");
+        runEntry("NORMAL", "C-u");
+        expect(useOutlineStore.getState().cursorTaskId).toBe("a");
+    });
+
+    it("NORMAL の C-d / C-u はカーソル未選択なら先頭行へ移す (j / k と同じ)", () => {
+        useOutlineStore.setState({ cursorTaskId: null });
+        runEntry("NORMAL", "C-d");
+        expect(useOutlineStore.getState().cursorTaskId).toBe("a");
+    });
+
     it("NORMAL の za がカーソル行の折りたたみを切り替える", () => {
         runEntry("NORMAL", "z a");
         expect(useOutlineStore.getState().collapsedTaskIds.has("b")).toBe(true);
@@ -169,6 +206,32 @@ describe("ストアを直接操作するエントリ", () => {
     it("NORMAL の za はカーソル未選択なら何もしない", () => {
         useOutlineStore.setState({ cursorTaskId: null });
         runEntry("NORMAL", "z a");
+        expect(useOutlineStore.getState().collapsedTaskIds.size).toBe(0);
+    });
+
+    it("NORMAL の zc / zo がカーソル行の折りたたみを閉じる / 開く (すでにその状態でも変わらない)", () => {
+        runEntry("NORMAL", "z c");
+        expect(useOutlineStore.getState().collapsedTaskIds.has("b")).toBe(true);
+        runEntry("NORMAL", "z c");
+        expect(useOutlineStore.getState().collapsedTaskIds.has("b")).toBe(true);
+
+        runEntry("NORMAL", "z o");
+        expect(useOutlineStore.getState().collapsedTaskIds.has("b")).toBe(false);
+        runEntry("NORMAL", "z o");
+        expect(useOutlineStore.getState().collapsedTaskIds.has("b")).toBe(false);
+    });
+
+    it("NORMAL の zc / zo はカーソル未選択なら何もしない", () => {
+        useOutlineStore.setState({ cursorTaskId: null, collapsedTaskIds: new Set(["a"]) });
+        runEntry("NORMAL", "z c");
+        runEntry("NORMAL", "z o");
+        expect([...useOutlineStore.getState().collapsedTaskIds]).toEqual(["a"]);
+    });
+
+    // zM (すべて折りたたむ) は対象 ID の算出に木構造が要るためハンドラ側にあり、ここではストア側の zR だけを見る
+    it("NORMAL の zR がすべて展開する", () => {
+        useOutlineStore.setState({ collapsedTaskIds: new Set(["a", "b"]) });
+        runEntry("NORMAL", "z R");
         expect(useOutlineStore.getState().collapsedTaskIds.size).toBe(0);
     });
 
