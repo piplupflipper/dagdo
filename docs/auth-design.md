@@ -1,6 +1,6 @@
-# entodo 認証認可設計書
+# dagdo 認証認可設計書
 
-- 対象リポジトリ: entodo
+- 対象リポジトリ: dagdo
 - 対象コミット: 157c16e
 - 作成日: 2026-08-08
 - 生成者: Claude Code
@@ -32,7 +32,7 @@ DB スキーマ・RLS・Trigger・RPC の全体像は `docs/db-design.md` に、
 
 ## 1. サマリ
 
-entodo の認証は Auth.js（NextAuth v5 系）+ GitHub OAuth + `@auth/supabase-adapter` によって行い、認証データは Supabase PostgreSQL の `next_auth` schema に保存する（確定事項。`req.md` §2.3, §30, §31）。
+dagdo の認証は Auth.js（NextAuth v5 系）+ GitHub OAuth + `@auth/supabase-adapter` によって行い、認証データは Supabase PostgreSQL の `next_auth` schema に保存する（確定事項。`req.md` §2.3, §30, §31）。
 
 Session strategy は database とする（2026-08-08 ユーザー確定）。
 `next_auth.sessions` テーブルにセッションを永続化し、Auth.js はセッション cookie の値からこのテーブルを参照してセッションの真正性を検証する。
@@ -56,7 +56,7 @@ UI 側のログイン画面デザインや、`docs/frontend-design.md` が扱う
 
 ### 2.1 2 系統の認証情報
 
-entodo は 2 種類の異なる認証情報を明確に分離して扱う（確定事項。`req.md` §33）。
+dagdo は 2 種類の異なる認証情報を明確に分離して扱う（確定事項。`req.md` §33）。
 
 **Auth.js Session** の目的は、Next.js 側でログインユーザーを識別することである(`req.md` §33)。
 GitHub OAuth ログイン後に Auth.js が発行し、`next_auth.sessions` に永続化する。
@@ -209,7 +209,7 @@ Auth.js の認証情報は `next_auth` schema の 4 テーブルへ保存する(
 - `next_auth.users`: Auth.js user のレコード。`id`（UUID）が `tasks.user_id` の参照先となる(`req.md` §31, §32)
 - `next_auth.accounts`: GitHub account と Auth.js user の紐付け。GitHub account 側の情報はここに閉じ、`tasks.user_id` には現れない(`req.md` §32)
 - `next_auth.sessions`: session strategy = database で使用するセッションレコード（第 3.3 節）
-- `next_auth.verification_tokens`: メール等のトークン系ログイン方式で使用するテーブル。entodo は GitHub OAuth のみを使用するため実質的に利用しない
+- `next_auth.verification_tokens`: メール等のトークン系ログイン方式で使用するテーブル。dagdo は GitHub OAuth のみを使用するため実質的に利用しない
 
 ### 4.2 next_auth.uid()
 
@@ -256,7 +256,7 @@ Custom JWT は Server Action の呼び出し毎に発行する（2026-08-08 ユ�
 理由は次の 2 点である。
 
 - 有効期限を 5 分程度の短命に保つ設計（第 5.1 節）と、キャッシュして使い回す設計は相性が悪い。キャッシュを導入すると「キャッシュした JWT の有効期限が Server Action 呼び出し時点で既に切れていないか」を確認する処理が別途必要になり、失効管理を持たないという設計判断（第 5.4 節）と矛盾する
-- entodo は個人利用を主用途とし(`req.md` §3.1)、Server Action の呼び出し頻度もそれに応じて低いため、リクエスト毎の署名コストは無視できる
+- dagdo は個人利用を主用途とし(`req.md` §3.1)、Server Action の呼び出し頻度もそれに応じて低いため、リクエスト毎の署名コストは無視できる
 
 ### 5.3 署名方式
 
@@ -320,7 +320,7 @@ Custom JWT には失効リスト（revocation list）やブラックリスト機
 理由は次のとおりである。
 
 - 有効期限が約 5 分と短く、発行毎に使い切りであるため、漏洩時の悪用可能期間はもともと 5 分以内に限定される
-- 失効管理を実装するには、失効済み JWT の ID や有効期限を何らかのストア（DB やキャッシュ）に記録し、RLS または Data API 層で毎回照合する仕組みが必要になる。これは Custom JWT を「短命にしてステートレスに保つ」という設計方針（第 5.2 節、キャッシュを持たない理由と同根）と矛盾し、entodo の個人利用中心という利用規模(`req.md` §3.1)に見合わない複雑さを持ち込む
+- 失効管理を実装するには、失効済み JWT の ID や有効期限を何らかのストア（DB やキャッシュ）に記録し、RLS または Data API 層で毎回照合する仕組みが必要になる。これは Custom JWT を「短命にしてステートレスに保つ」という設計方針（第 5.2 節、キャッシュを持たない理由と同根）と矛盾し、dagdo の個人利用中心という利用規模(`req.md` §3.1)に見合わない複雑さを持ち込む
 
 この割り切りは第 9 章でも非目標として明記する。
 
@@ -396,7 +396,7 @@ middleware の cookie 存在チェックをすり抜けた（あるいは middle
 
 ### 7.1 RLS と複合 FK の二重分離
 
-entodo は allowlist を設けず(`req.md` §3.1)、認可を RLS と `user_id` 付き複合 FK の二重で保証する(`req.md` §39〜43)。
+dagdo は allowlist を設けず(`req.md` §3.1)、認可を RLS と `user_id` 付き複合 FK の二重で保証する(`req.md` §39〜43)。
 
 RLS は `public.tasks` / `public.task_dependencies` の両方で有効化し(`req.md` §40)、基本条件を次のとおりとする(`req.md` §40)。
 
@@ -519,7 +519,7 @@ next_auth.uid() (RLS Policy内で解決)
 
 ---
 
-- 対象リポジトリ: entodo
+- 対象リポジトリ: dagdo
 - 対象コミット: 157c16e
 - 作成日: 2026-08-08
 - 生成者: Claude Code

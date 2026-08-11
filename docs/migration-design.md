@@ -1,6 +1,6 @@
-# entodo Supabase マイグレーション設計書
+# dagdo Supabase マイグレーション設計書
 
-対象リポジトリ: entodo
+対象リポジトリ: dagdo
 対象コミット: 1b82bda
 作成日: 2026-08-08
 生成者: Claude Code
@@ -35,7 +35,7 @@ DB スキーマ・RLS・Trigger・RPC の設計内容そのものは `docs/db-de
 
 ## 1. サマリ
 
-entodo の DB スキーマ（`tasks` / `task_dependencies` / `app_tasks` View / Trigger / RPC / RLS / `next_auth` schema）は `docs/db-design.md` と `docs/auth-design.md` で確定している。
+dagdo の DB スキーマ（`tasks` / `task_dependencies` / `app_tasks` View / Trigger / RPC / RLS / `next_auth` schema）は `docs/db-design.md` と `docs/auth-design.md` で確定している。
 本文書はこれを Supabase CLI のローカル開発フローへ落とし込むための実行計画であり、次の 3 点を確定事項として前提に置く（2026-08-08 ユーザー確定）。
 
 1. **migration は意味単位で数本に分割する**。1 本の init migration へ集約しない。
@@ -58,14 +58,14 @@ UI/UX の詳細、Server Action の実装詳細は本文書の対象外とする
 
 ## 2. Supabase CLI ワークフロー全体像
 
-entodo は専用バックエンドサーバーを持たず、Next.js Server Actions から Supabase Data API へ直接アクセスする構成である(req.md §1, §71)。
+dagdo は専用バックエンドサーバーを持たず、Next.js Server Actions から Supabase Data API へ直接アクセスする構成である(req.md §1, §71)。
 ローカル開発およびスキーマ変更管理には Supabase CLI を用いる(req.md §74)。
 
 ### 2.1 各コマンドの役割
 
 | コマンド | 役割 |
 | --- | --- |
-| `supabase init` | リポジトリに `supabase/` ディレクトリと既定の `config.toml` を生成する。entodo では最初の 1 回のみ実行する |
+| `supabase init` | リポジトリに `supabase/` ディレクトリと既定の `config.toml` を生成する。dagdo では最初の 1 回のみ実行する |
 | `supabase start` | Docker 上にローカル Postgres・Supabase Data API（PostgREST）・Supabase Studio 等のスタックを起動する |
 | `supabase stop` | 起動したローカルスタックを停止する |
 | `supabase migration new <name>` | `supabase/migrations/` 配下に `<timestamp>_<name>.sql` という空の migration ファイルを生成する |
@@ -79,7 +79,7 @@ entodo は専用バックエンドサーバーを持たず、Next.js Server Acti
 
 ### 2.2 日常の開発ループ
 
-新しい migration を追加する際の開発ループを次に示す（提案。CLI の一般的な使い方を entodo の運用に当てはめたもの）。
+新しい migration を追加する際の開発ループを次に示す（提案。CLI の一般的な使い方を dagdo の運用に当てはめたもの）。
 
 ```text
 supabase migration new <意味を表す名前>
@@ -140,7 +140,7 @@ supabase/
 
 ## 4. config.toml の要点
 
-`supabase init` が生成する `config.toml` に対して、entodo 固有の設定を加える点は次の 2 点である。
+`supabase init` が生成する `config.toml` に対して、dagdo 固有の設定を加える点は次の 2 点である。
 
 ### 4.1 `[api]` の `schemas` への `next_auth` 追加
 
@@ -163,13 +163,13 @@ Supabase Auth は認証主体として使用しない(req.md §2.3)。
 認証は Auth.js + GitHub OAuth + `@auth/supabase-adapter` が担い、Auth.js のデータは `next_auth` schema に保存される(req.md §30, §31)。
 
 ローカルスタックには既定で GoTrue（Supabase Auth を提供するコンポーネント。11章）が含まれる。
-entodo ではこれを使わないため、次の 2 案のいずれかとする（提案。どちらを採るかは未確定）。
+dagdo ではこれを使わないため、次の 2 案のいずれかとする（提案。どちらを採るかは未確定）。
 
 - **案 A: 無効化する**。`config.toml` の `[auth]` セクションに `enabled = false` を設定し、ローカルスタックから GoTrue コンテナを起動しない。用途のないコンポーネントを起動しないことで、ローカル環境の構成を実際の認証経路（Auth.js 経由）に一致させられる
 - **案 B: 既定のまま放置する**。GoTrue は起動するが、Auth.js も RLS の `next_auth.uid()` もこれを参照しないため、動作上は無害である。将来 Supabase Auth を部分的に使う可能性を残せる
 
 いずれの案でも、RLS Policy の `user_id = next_auth.uid()`(req.md §40) や RPC の `to authenticated` 権限(req.md §58) は GoTrue の発行する JWT ではなく、`docs/auth-design.md` 第5章が定める Custom JWT を前提にしている。
-GoTrue の有効・無効は entodo の認証フローに影響しない。
+GoTrue の有効・無効は dagdo の認証フローに影響しない。
 
 ### 4.3 その他
 
@@ -197,11 +197,11 @@ migration は意味単位で 6 本に分割する（2026-08-08 ユーザー確�
 
 ### 5.1 各ファイルの分割理由
 
-**1. next_auth_schema**：`@auth/supabase-adapter` が要求する公式スキーマ定義を、entodo 自身の migration として管理する（提案）。
+**1. next_auth_schema**：`@auth/supabase-adapter` が要求する公式スキーマ定義を、dagdo 自身の migration として管理する（提案）。
 理由は次の 2 点である。
 
 - ローカル再現性: `supabase db reset` だけでローカル環境に `next_auth` schema を含む DB 全体を再現できる。Adapter 側のインストールや Dashboard 操作に依存させない
-- 履歴管理: `next_auth` schema に対する将来的な変更（Adapter のバージョンアップに伴うスキーマ差分など）を、entodo 自身の migration 履歴として `git log` から追跡できる
+- 履歴管理: `next_auth` schema に対する将来的な変更（Adapter のバージョンアップに伴うスキーマ差分など）を、dagdo 自身の migration 履歴として `git log` から追跡できる
 
 この migration の中身は `@auth/supabase-adapter` が要求する公式の schema 定義（`next_auth` schema 作成、4 テーブル、`next_auth.uid()` 関数）をそのまま用いる。
 具体的なテーブル定義（カラム名・型）は Adapter のバージョンに紐づくため、実装時に Adapter が要求する定義を確認して migration へ反映する。
@@ -462,7 +462,7 @@ hosted プロジェクトの作成・`supabase link` に必要な認証情報の
 
 ## 11. 用語集
 
-**migration**：DB スキーマに対する変更を、適用順序が一意に定まる SQL ファイルの集合として管理する仕組み。entodo では `supabase/migrations/` 配下に置き、`supabase db reset` / `supabase db push` によって適用する。
+**migration**：DB スキーマに対する変更を、適用順序が一意に定まる SQL ファイルの集合として管理する仕組み。dagdo では `supabase/migrations/` 配下に置き、`supabase db reset` / `supabase db push` によって適用する。
 
 **seed**：`supabase/seed.sql` に定義する、ローカル開発専用の初期データ。`supabase db reset` の実行時にのみ適用され、本番の hosted プロジェクトには流さない（6章）。
 
@@ -476,9 +476,9 @@ hosted プロジェクトの作成・`supabase link` に必要な認証情報の
 
 **`supabase test db`**：`supabase/tests/` 配下の pgTAP テストを、使い捨てのテスト用 DB に対して実行する CLI コマンド（7章）。
 
-**config.toml**：`supabase init` が生成する、ローカルスタックの設定ファイル。`[api]` セクションの `schemas` に `next_auth` を追加する等、entodo 固有の設定を加える（4章）。
+**config.toml**：`supabase init` が生成する、ローカルスタックの設定ファイル。`[api]` セクションの `schemas` に `next_auth` を追加する等、dagdo 固有の設定を加える（4章）。
 
-**GoTrue**：Supabase Auth を提供するコンポーネント。entodo では認証主体として使用せず(req.md §2.3)、ローカルスタックでは無効化するか、既定のまま放置するかを未確定の提案として扱う（4.2節）。
+**GoTrue**：Supabase Auth を提供するコンポーネント。dagdo では認証主体として使用せず(req.md §2.3)、ローカルスタックでは無効化するか、既定のまま放置するかを未確定の提案として扱う（4.2節）。
 
 **Data API（PostgREST）**：Supabase が PostgreSQL の前段に提供する REST API 層。`@auth/supabase-adapter` や Todo アプリの Server Action は、いずれもこの Data API 経由で PostgreSQL へアクセスする(`docs/auth-design.md` 第4.3節)。
 
@@ -490,7 +490,7 @@ hosted プロジェクトの作成・`supabase link` に必要な認証情報の
 
 ---
 
-対象リポジトリ: entodo
+対象リポジトリ: dagdo
 対象コミット: 1b82bda
 作成日: 2026-08-08
 生成者: Claude Code

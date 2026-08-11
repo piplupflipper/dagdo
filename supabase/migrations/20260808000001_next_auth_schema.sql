@@ -114,13 +114,13 @@ grant all on table next_auth.verification_tokens to postgres;
 grant all on table next_auth.verification_tokens to service_role;
 
 --
--- entodo 固有の追加 grant (公式 schema.sql には含まれない)
+-- dagdo 固有の追加 grant (公式 schema.sql には含まれない)
 --
 -- public.tasks / public.task_dependencies の RLS Policy (req.md §40〜43) は
 -- `user_id = next_auth.uid()` を authenticated ロールとして評価する。
 -- そのためには authenticated / anon ロールが next_auth schema を参照 (USAGE) でき、
 -- next_auth.uid() を実行 (EXECUTE) できる必要がある。
 -- 公式 schema.sql は Adapter 自身 (service_role 経由) の利用のみを想定しており、
--- これらの grant を含まないため、entodo 側で明示的に追加する。
+-- これらの grant を含まないため、dagdo 側で明示的に追加する。
 grant usage on schema next_auth to authenticated, anon;
 grant execute on function next_auth.uid() to authenticated, anon;

@@ -1,6 +1,6 @@
-# entodo DB設計書
+# dagdo DB設計書
 
-対象リポジトリ: entodo
+対象リポジトリ: dagdo
 対象コミット: 90c9c84
 作成日: 2026-08-08
 生成者: Claude Code
@@ -11,7 +11,7 @@
 
 ## 1. サマリ
 
-entodoは個人利用を主目的としたWebベースのTodoアプリケーションである(req.md §1)。
+dagdoは個人利用を主目的としたWebベースのTodoアプリケーションである(req.md §1)。
 
 タスクは通常のTodo管理に加えて、親子関係と依存関係という2種類のタスク間関係を扱う(req.md §1)。
 
@@ -58,7 +58,7 @@ DB設計の骨子は次の3点に要約できる。
 
 ## 2. 全体アーキテクチャと責務分割
 
-entodoの技術構成は、アプリケーション側がNext.js、TypeScript、Server Actions、Vercelであり、データベース側がSupabase、PostgreSQL、Supabase Data API、PostgreSQL RLS、PostgreSQL View、PostgreSQL Trigger、PostgreSQL Function（Supabase RPC経由）である(req.md §2.1, §2.2)。
+dagdoの技術構成は、アプリケーション側がNext.js、TypeScript、Server Actions、Vercelであり、データベース側がSupabase、PostgreSQL、Supabase Data API、PostgreSQL RLS、PostgreSQL View、PostgreSQL Trigger、PostgreSQL Function（Supabase RPC経由）である(req.md §2.1, §2.2)。
 
 書き込み経路の責務は次のように整理されている(req.md §71)。
 
@@ -126,7 +126,7 @@ Triggerには「どの経路からDBを書き換えても破られてはいけ�
 
 ## 3. テーブル設計
 
-entodoのDB設計は`tasks`テーブルと`task_dependencies`テーブルの2つを中心に構成される。
+dagdoのDB設計は`tasks`テーブルと`task_dependencies`テーブルの2つを中心に構成される。
 
 利用者は個人利用を主用途とするが、複数ユーザーが利用してもデータが混在しないよう、RLSと`user_id`付きのFK制約の両方でユーザー単位の分離を保証する方針である(req.md §3.1)。
 
@@ -1128,11 +1128,11 @@ cycle判定はrecursive CTEとTriggerで行う(req.md §70)。
 
 ただし、複数トランザクションから同時にグラフ構造を変更する極端なケースでは、MVCC（Multi-Version Concurrency Control、PostgreSQLの多版型同時実行制御）上それぞれの未commit変更が互いに見えない問題があり得る(req.md §70)。
 
-entodoでは競合頻度が低いため、V1で複雑なロック機構を必須としない(req.md §70)。
+dagdoでは競合頻度が低いため、V1で複雑なロック機構を必須としない(req.md §70)。
 
 必要になった場合、user_id単位のPostgreSQL advisory lockなどを検討する(req.md §70)。
 
-この割り切りは、個人利用を主用途とし(req.md §3.1)、数百から数千件規模を想定する(req.md §68)というentodoの利用規模の前提に対応している。
+この割り切りは、個人利用を主用途とし(req.md §3.1)、数百から数千件規模を想定する(req.md §68)というdagdoの利用規模の前提に対応している。
 
 ## 16. V1の設計原則
 
@@ -1170,17 +1170,17 @@ req.mdは7つの設計原則を挙げている(req.md §75)。
 
 **sort_path**：削除済み祖先を透明化してもtree上の順序を維持するための、integer arrayによる派生値(req.md §46)。ルートから各階層のpositionを連結した配列であり、辞書順比較でtree順序を得る(req.md §46)。実カラムとしては保存しない(req.md §46, §75)。
 
-**RLS（Row Level Security）**：PostgreSQLの行単位アクセス制御機能。entodoでは`user_id = next_auth.uid()`を基本条件として`tasks`と`task_dependencies`に適用する(req.md §40)。
+**RLS（Row Level Security）**：PostgreSQLの行単位アクセス制御機能。dagdoでは`user_id = next_auth.uid()`を基本条件として`tasks`と`task_dependencies`に適用する(req.md §40)。
 
 **RPC（Remote Procedure Call）**：本文書ではSupabase RPC（PostgreSQL Functionの呼び出し）を指す。複数行更新や複数操作を1トランザクションとして扱う層であり、`move_task`、`reorder_tasks`、`add_task_dependency`、`restore_task`、`permanently_delete_task`の5種を想定する(req.md §51, §52)。
 
 **security_invoker**：PostgreSQL Viewのオプションの1つ。Viewを実行するクエリ発行者の権限で基底テーブルアクセスを評価し、View経由でも基底テーブルのRLSを適用させる(req.md §45)。
 
-**SECURITY INVOKER**：PostgreSQL Functionのオプションの1つ。関数を呼び出したユーザーの権限で関数本体を実行し、RLSを維持する。entodoのRPCは基本的にこれを使用する(req.md §52)。
+**SECURITY INVOKER**：PostgreSQL Functionのオプションの1つ。関数を呼び出したユーザーの権限で関数本体を実行し、RLSを維持する。dagdoのRPCは基本的にこれを使用する(req.md §52)。
 
-**forest**：複数の木構造（tree）の集合のこと。entodoの親子関係は、1タスクにつき親が最大1つで循環を禁止することにより、forest構造をなす(req.md §8)。
+**forest**：複数の木構造（tree）の集合のこと。dagdoの親子関係は、1タスクにつき親が最大1つで循環を禁止することにより、forest構造をなす(req.md §8)。
 
-**DAG（Directed Acyclic Graph、有向非巡回グラフ）**：辺に向きがあり、かつ循環を含まないグラフ構造のこと。entodoの依存関係はDAGとして設計される(req.md §10)。
+**DAG（Directed Acyclic Graph、有向非巡回グラフ）**：辺に向きがあり、かつ循環を含まないグラフ構造のこと。dagdoの依存関係はDAGとして設計される(req.md §10)。
 
 **next_auth schema**：Auth.jsの認証情報を保存するPostgreSQL schema。`next_auth.users`、`next_auth.accounts`、`next_auth.sessions`、`next_auth.verification_tokens`を含む(req.md §31)。
 
@@ -1188,15 +1188,15 @@ req.mdは7つの設計原則を挙げている(req.md §75)。
 
 **Custom JWT**：Next.js Server ActionからSupabase Data APIへアクセスする際に生成する短寿命のJWT。`sub`（Auth.js user UUID）、`role`（`authenticated`）、`exp`を含む(req.md §34)。Auth.jsのsessionとは別物として扱う(req.md §33)。
 
-**Trigger**：どの経路からDBを書き換えても破られてはいけない不変条件を保証するPostgreSQLの機構。entodoでは親子cycle禁止、dependency cycle禁止、blockedタスクの完了禁止、`updated_at`更新の4種に用いる(req.md §47, §51)。
+**Trigger**：どの経路からDBを書き換えても破られてはいけない不変条件を保証するPostgreSQLの機構。dagdoでは親子cycle禁止、dependency cycle禁止、blockedタスクの完了禁止、`updated_at`更新の4種に用いる(req.md §47, §51)。
 
-**recursive CTE（再帰的共通テーブル式）**：自身の結果集合を再帰的に参照するSQLのWITH句。entodoでは親子cycle Triggerとdependency cycle Triggerが、祖先やcycleの探索に用いる(req.md §48, §49)。
+**recursive CTE（再帰的共通テーブル式）**：自身の結果集合を再帰的に参照するSQLのWITH句。dagdoでは親子cycle Triggerとdependency cycle Triggerが、祖先やcycleの探索に用いる(req.md §48, §49)。
 
-**MVCC（Multi-Version Concurrency Control、多版型同時実行制御）**：PostgreSQLが採用する同時実行制御方式。entodoでは、複数トランザクションが同時にグラフ構造を変更する場合に、互いの未commit変更が見えない問題の背景として言及される(req.md §70)。
+**MVCC（Multi-Version Concurrency Control、多版型同時実行制御）**：PostgreSQLが採用する同時実行制御方式。dagdoでは、複数トランザクションが同時にグラフ構造を変更する場合に、互いの未commit変更が見えない問題の背景として言及される(req.md §70)。
 
 ---
 
-対象リポジトリ: entodo
+対象リポジトリ: dagdo
 対象コミット: 90c9c84
 作成日: 2026-08-08
 生成者: Claude Code

@@ -1,6 +1,6 @@
-# entodo
+# dagdo
 
-entodo は、アウトライナー形式 + vim ライクなキーボード操作でタスクを管理する Todo アプリケーションである。Next.js (App Router) 上に構築し、データベースには Supabase PostgreSQL を用いる。要件定義は `req.md` に、フロントエンド技術設計は `docs/frontend-design.md` に記載する。
+dagdo は、アウトライナー形式 + vim ライクなキーボード操作でタスクを管理する Todo アプリケーションである。Next.js (App Router) 上に構築し、データベースには Supabase PostgreSQL を用いる。要件定義は `req.md` に、フロントエンド技術設計は `docs/frontend-design.md` に記載する。
 
 ## ドキュメント
 

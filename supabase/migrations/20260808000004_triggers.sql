@@ -5,7 +5,7 @@
 -- req.md §66 のエラーコード文字列を置くことで、アプリ側がメッセージ文字列と
 -- SQLSTATE (`error.code`) の両方から判別できるようにする。
 --
--- entodo 固有の SQLSTATE 割り当て (P0001 等の予約域と衝突しない 5 文字コード):
+-- dagdo 固有の SQLSTATE 割り当て (P0001 等の予約域と衝突しない 5 文字コード):
 --   ET001 TASK_NOT_FOUND            (RPC側で使用。migration 5)
 --   ET002 TASK_PARENT_CYCLE
 --   ET003 TASK_DEPENDENCY_CYCLE

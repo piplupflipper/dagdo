@@ -4,8 +4,8 @@ import { NightSkyBackground } from "@/components/background/night-sky-background
 import "./globals.css";
 
 export const metadata: Metadata = {
-    title: "entodo",
-    description: "entodo",
+    title: "dagdo",
+    description: "dagdo",
 };
 
 /**

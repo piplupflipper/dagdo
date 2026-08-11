@@ -1,4 +1,4 @@
-# entodo 集約 Makefile
+# dagdo 集約 Makefile
 #
 # サブプロジェクト:
 #   fe-* : Next.js アプリ (リポジトリルート、Node 22 は .node-version で固定)

@@ -28,8 +28,8 @@
 insert into next_auth.users (id, name, email)
 values (
   'ffffffff-ffff-ffff-ffff-ffffffffffff',
-  'entodo dev user',
-  'dev@entodo.local'
+  'dagdo dev user',
+  'dev@dagdo.local'
 );
 
 -- tasks
