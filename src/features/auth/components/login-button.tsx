@@ -6,11 +6,14 @@ import { signIn } from "@/auth";
  *
  * form action から signIn("github") を呼ぶ Server Action 形式で実装する
  * (クライアント JS を必要としない)
+ *
+ * redirectTo を指定しない場合、Auth.js は callback 後の戻り先を signIn を
+ * 発火したページ (= /login) にしてしまうため、明示的に "/" を指定する
  */
 export const LoginButton = (): ReactNode => {
     const handleLogin = async (): Promise<void> => {
         "use server";
-        await signIn("github");
+        await signIn("github", { redirectTo: "/" });
     };
 
     return (
