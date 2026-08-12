@@ -43,6 +43,10 @@ export type OutlineKeymapHandlers = {
     outdentCursor: () => void;
     /** `dd`。ゴミ箱へ softDeleteTask する */
     softDeleteCursor: () => void;
+    /** `u`。undo スタックの末尾を実行する (Phase 2、docs/frontend-design.md §5.2) */
+    undo: () => void;
+    /** `U`。redo スタックの末尾を実行する (Phase 2、docs/frontend-design.md §5.2) */
+    redo: () => void;
     /** `?`。キーバインドのヘルプオーバーレイを開く */
     openHelp: () => void;
     /**
@@ -116,6 +120,10 @@ export const outlineKeymap: readonly KeymapEntry[] = [
     { keys: "O", mode: "NORMAL", category: "編集", description: "カーソル行の上に新規タスクを作成", run: ({ handlers }) => handlers.createSibling("above") },
     { keys: "Enter", mode: "NORMAL", category: "編集", description: "詳細ペインの編集領域へフォーカスを移す", run: ({ handlers }) => handlers.focusDetailEditor() },
     { keys: "d d", mode: "NORMAL", category: "編集", description: "カーソル行をゴミ箱へ移動", run: ({ handlers }) => handlers.softDeleteCursor() },
+    // undo/redo は Server Action が成功で確定した操作のみを対象とする履歴スタックを辿る (Phase 2、docs/frontend-design.md §5.2)。
+    // `U` は Shift 付きだが key-sequence.ts は Shift を接頭辞にせず event.key へ反映済みの値をそのまま使うため、`u` と衝突しない
+    { keys: "u", mode: "NORMAL", category: "編集", description: "undo (直前の確定操作を取り消す)", run: ({ handlers }) => handlers.undo() },
+    { keys: "U", mode: "NORMAL", category: "編集", description: "redo (取り消した操作をやり直す)", run: ({ handlers }) => handlers.redo() },
 
     // NORMAL: 行内編集
     // Enter / Escape は InlineTitleEditor のローカルハンドラが処理するためのドキュメント専用エントリ (run なし)。

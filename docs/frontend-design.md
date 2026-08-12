@@ -326,6 +326,40 @@ type OutlineActions = {
 Zustand には「どのタスクにカーソルがあるか」「どの範囲が選択されているか」といった UI 座標的な状態のみを置き、タスクの内容そのものは一切保持しない。
 この分離により、ストアのシリアライズ範囲が小さく保たれ、タスクデータの再取得（revalidate）とカーソル位置のようなセッション的な UI 状態が互いに独立して更新できる。
 
+全構造操作（作成・完了・タイトル変更・移動・並べ替え・ゴミ箱への移動・復元）は、「表示状態 = reduce(サーバー由来 tasks, pendingOps)」という単一リデューサ方式で表す（確定事項）。
+1 回のユーザー操作（キー入力・dnd ドロップ）を discriminated union の `OutlineOp`（`features/outline/lib/outline-ops.ts`）1 件に対応させ、`useOptimistic(initialTasks, (state, op) => applyOutlineOp(state, dependencies, op))` の第 2 引数（reducer）から `applyOutlineOp` をそのまま呼ぶ。
+
+```typescript
+type OutlineOp =
+    | { type: "create"; tempId: string; title: string; parentId: string | null; position: number | null }
+    | { type: "complete"; taskId: string }
+    | { type: "reopen"; taskId: string }
+    | { type: "updateTitle"; taskId: string; title: string }
+    | { type: "move"; taskId: string; newParentId: string | null; newPosition: number } // indent/outdent/dnd reparent
+    | { type: "reorder"; taskId: string; newPosition: number } // 同一 actual parent 内の並べ替え
+    | { type: "softDelete"; taskId: string }
+    | { type: "restore"; taskId: string; snapshot: AppTask };
+```
+
+`applyOutlineOp(tasks, dependencies, op)` は 1 Op を適用したうえで、`app_tasks` View（`supabase/migrations/20260808000003_app_tasks_view.sql`）と同じ意味論で `sort_path` / `effective_parent_id` / `is_blocked` を全行再計算する（normalize）純関数である。
+`move` / `reorder` の position 採番規則は `move_task` / `reorder_tasks` RPC（`supabase/migrations/20260808000005_rpc_functions.sql`、`20260808000007_reorder_tasks_exclude_deleted_siblings.sql`）の挙動にそのまま合わせる。
+
+`restore` だけ `taskId` に加えて `snapshot`（削除直前の行そのもの）を持つ。`softDelete` は tasks 配列から行そのものを除去するため、`taskId` だけでは元の `title` / `parent_id` / `position` 等を再構成できないためである。
+snapshot は dispatch 時点の `optimisticTasks` から取得して Op へ閉じ込める。
+
+`softDelete` の undo（Phase 2）は `restore` 単独ではなく `[restore(snapshot), move(元の parent_id・position へ)]` の 2 Op 列とする（確定事項）。
+`restore_task` RPC（`supabase/migrations/20260808000005_rpc_functions.sql`）は actual sibling group の末尾へ position を移す仕様であり、削除前の元の位置には戻さないためである。
+`move` の適用は old/new の parent_id・position が一致する（= snapshot の値）ときに隙間詰め・隙間空けが互いに打ち消して no-op になるため、ローカルの楽観表示は `restore` 直後の snapshot 位置のまま変わらない。サーバー側だけ `restore_task` の末尾 → 元の位置へ `move_task` RPC で収束する。
+`restore` が成功し `move` が失敗した場合は、他の undo 失敗と同様にステータスラインへエラー表示してエントリを破棄する（復元自体は済んでいるため致命的ではない）。
+
+`create` は `tempId`（`crypto.randomUUID()`）で楽観行を即時挿入し、カーソルも `tempId` へ合わせる。Server Action 成功後、実 id へ `setCursor` し直す。
+`tempId` はまだ実 DB に存在しないため、確定前にこれを対象とする構造操作・undo/redo は no-op にするガードを置く（`OutlineShell` が `tempId` の集合を `useRef` で保持し、settle で除去する）。
+
+Phase 2 として、Server Action が成功で確定した Op だけを対象に undo（`u`）/ redo（`U`）の履歴スタックを持つ（第 6.1 節）。
+履歴（`features/outline/lib/undo-history.ts`）は `{ label, undoOps, redoOps }` のエントリを積む純粋なスタック操作であり、逆操作の材料（変更前の `parent_id` / `position` / `title` / `completed_at`）は dispatch 時点の `optimisticTasks` から取得してエントリへ閉じ込める。
+新しい操作が確定すると redo スタックは破棄する（vim に倣う）。VISUAL の一括完了（`completeSelection`）は成功した taskId 群を 1 エントリへまとめる。
+対象はアウトライン操作に限り、`DetailPane` の説明・期日・依存関係の編集やゴミ箱画面からの復元・完全削除は履歴の対象外とする（将来拡張）。
+
 ### 5.3 派生値
 
 `is_blocked` は `app_tasks` View 側で算出される派生値であり(req.md §44, §75 原則 2)、クライアントで再計算しない（確定事項）。
@@ -375,7 +409,8 @@ NORMAL モード。
 | `dd` | ゴミ箱へ移動 | `softDeleteTask`。連続 2 打鍵で確定する（vim の `dd` に倣う。pending key 方式、第 6.2 節） |
 | `/` | 検索モードへ | 第 5.1 節参照 |
 | `?` | キーバインドのヘルプを表示 | ヘルプオーバーレイを開く。表示内容は keymap テーブルから生成する（第 6.3 節） |
-| `u` | undo | V1 のスコープ外とする（提案。`req.md` に undo の記載はなく、本設計書で明示的に対象外とする） |
+| `u` | undo | 確定済み Op の履歴スタックの末尾を取り消す（第 5.2 節）。`req.md` に undo の記載はなく、対象はアウトライン操作に限る（提案） |
+| `U` | redo | `u` で取り消した操作をやり直す（第 5.2 節）。Shift 付きだが `event.key` へ既に反映されているため `u` とは別トークンになる（第 6.2 節） |
 
 VISUAL モード。
 

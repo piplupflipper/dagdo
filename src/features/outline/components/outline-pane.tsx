@@ -21,7 +21,7 @@ export type OutlinePaneProps = {
     onSelectCursor: (taskId: string) => void;
     onToggleCollapse: (taskId: string) => void;
     onToggleDone: (task: AppTask) => void;
-    onReorder: (result: SiblingReorderResult) => void;
+    onReorder: (taskId: string, result: SiblingReorderResult) => void;
     onReparent: (taskId: string, result: ReparentResult) => void;
     onCommitInlineTitle: (taskId: string, title: string) => void;
     onCancelInlineTitle: () => void;
@@ -88,7 +88,7 @@ export const OutlinePane = ({
 
         const dropResult = computeDropResult({ tasks, taskId: activeId, targetParentId: overItem.parentId, targetOrderedIds: orderedIds });
         if (dropResult.kind === "reorder") {
-            onReorder(dropResult.result);
+            onReorder(activeId, dropResult.result);
         } else {
             onReparent(activeId, dropResult.result);
         }
