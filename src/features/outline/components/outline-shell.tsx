@@ -106,6 +106,10 @@ const callServerForOp = (op: OutlineOp, tasksSnapshot: readonly AppTask[]): Prom
             return reopenTask({ taskId: op.taskId });
         case "updateTitle":
             return updateTask({ taskId: op.taskId, title: op.title });
+        case "updateDescription":
+            return updateTask({ taskId: op.taskId, description: op.description });
+        case "updateDueDate":
+            return updateTask({ taskId: op.taskId, dueDate: op.dueDate });
         case "move":
             return moveTask({ taskId: op.taskId, newParentId: op.newParentId, newPosition: op.newPosition });
         case "reorder": {
@@ -388,7 +392,14 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         setInlineTitleEdit({ taskId: cursorTask.id, caret });
     };
 
-    /** 行内編集の確定。タイトルが変わっていなければ Server Action を投げずに編集だけ畳む */
+    /**
+     * タイトル変更の確定。タイトルが変わっていなければ Server Action を投げずに編集だけ畳む
+     *
+     * 行内タイトル編集 (`i`/`A`) と DetailPane のタイトル編集の両方から呼ぶ共通ハンドラである
+     * (どちらも同じ `updateTitle` Op を経由する単一の保存経路、docs/frontend-design.md §5.2)。
+     * DetailPane 側には行内編集の state (`inlineTitleEdit`) が無いため、`setInlineTitleEdit(null)` は
+     * その経路では実質 no-op (既に null) になるだけで害はない
+     */
     const commitInlineTitleEdit = (taskId: string, title: string): void => {
         setInlineTitleEdit(null);
         if (isPendingTaskId(taskId)) {
@@ -408,6 +419,56 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
             }
             setStatusError(null);
             pushHistory("タイトル変更", [{ type: "updateTitle", taskId, title: previousTitle }], [{ type: "updateTitle", taskId, title }]);
+        });
+    };
+
+    /**
+     * DetailPane の説明編集の確定 (改修 3、docs/frontend-design.md §5.2, §6.5)
+     *
+     * `commitInlineTitleEdit` と同じ形 (楽観適用 → `updateTask` → 失敗時 `setStatusError` → 成功時 `pushHistory`)。
+     * 確定した瞬間に `applyOptimisticAction` で即時反映されるため、`updateTask` の応答を待たずに
+     * 呼び出し元 (DetailPane) は編集領域を畳んでよい。「保存中」のブロッキング表示はここでは行わない
+     */
+    const commitDescriptionEdit = (taskId: string, description: string): void => {
+        if (isPendingTaskId(taskId)) {
+            return;
+        }
+        const task = tasksById.get(taskId);
+        if (task === undefined || task.description === description) {
+            return;
+        }
+        const previousDescription = task.description;
+        startTransition(async () => {
+            applyOptimisticAction({ type: "updateDescription", taskId, description });
+            const result = await updateTask({ taskId, description });
+            if (!result.ok) {
+                setStatusError(formatActionError(result));
+                return;
+            }
+            setStatusError(null);
+            pushHistory("説明変更", [{ type: "updateDescription", taskId, description: previousDescription }], [{ type: "updateDescription", taskId, description }]);
+        });
+    };
+
+    /** DetailPane の期日編集の確定 (改修 3)。commitDescriptionEdit と同じ形 */
+    const commitDueDateEdit = (taskId: string, dueDate: string | null): void => {
+        if (isPendingTaskId(taskId)) {
+            return;
+        }
+        const task = tasksById.get(taskId);
+        if (task === undefined || task.due_date === dueDate) {
+            return;
+        }
+        const previousDueDate = task.due_date;
+        startTransition(async () => {
+            applyOptimisticAction({ type: "updateDueDate", taskId, dueDate });
+            const result = await updateTask({ taskId, dueDate });
+            if (!result.ok) {
+                setStatusError(formatActionError(result));
+                return;
+            }
+            setStatusError(null);
+            pushHistory("期日変更", [{ type: "updateDueDate", taskId, dueDate: previousDueDate }], [{ type: "updateDueDate", taskId, dueDate }]);
         });
     };
 
@@ -747,7 +808,16 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                 {/* dnd-kit の DndContext (行の並べ替え、OutlinePane 内) の外に置き、行 dnd とポインタ操作を競合させない */}
                 <PaneDivider containerRef={paneRowRef} ratio={leftPaneRatio} onRatioChange={setLeftPaneRatio} onDragEnd={handlePaneRatioDragEnd} />
                 <div className="hidden min-w-0 flex-1 flex-col bg-bg-alt backdrop-blur-sm md:flex">
-                    <DetailPane ref={detailPaneRef} task={cursorTask} allTasks={optimisticTasks} dependencies={dependencies} onEscapeToOutline={focusOutlineList} />
+                    <DetailPane
+                        ref={detailPaneRef}
+                        task={cursorTask}
+                        allTasks={optimisticTasks}
+                        dependencies={dependencies}
+                        onEscapeToOutline={focusOutlineList}
+                        onCommitTitle={commitInlineTitleEdit}
+                        onCommitDescription={commitDescriptionEdit}
+                        onCommitDueDate={commitDueDateEdit}
+                    />
                     <DagPanel centerTaskId={cursorTaskId} tasks={optimisticTasks} dependencies={dependencies} flashTaskId={flashTaskId} />
                 </div>
             </div>
@@ -760,6 +830,9 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                 isInert={isHelpOpen}
                 onClose={() => setCursor(null)}
                 onEscapeToOutline={focusOutlineList}
+                onCommitTitle={commitInlineTitleEdit}
+                onCommitDescription={commitDescriptionEdit}
+                onCommitDueDate={commitDueDateEdit}
             />
 
             <SearchOverlay />

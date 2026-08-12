@@ -20,6 +20,16 @@ export type OutlineOp =
     | { type: "complete"; taskId: string }
     | { type: "reopen"; taskId: string }
     | { type: "updateTitle"; taskId: string; title: string }
+    /**
+     * DetailPane の説明編集 (Ctrl+Enter / Cmd+Enter / Esc / 「保存」ボタンで確定、docs/frontend-design.md §6.5)
+     *
+     * 単純なフィールドパッチであり、normalize が読む parent_id / position / completed_at のいずれにも
+     * 影響しないため、他の構造操作と異なり sort_path / effective_parent_id / is_blocked の再計算結果は変わらない
+     * (normalize は呼ぶが実質的に恒等変換)
+     */
+    | { type: "updateDescription"; taskId: string; description: string }
+    /** DetailPane の期日編集 (「保存」ボタンで確定)。updateDescription と同じ単純なフィールドパッチ */
+    | { type: "updateDueDate"; taskId: string; dueDate: string | null }
     | { type: "move"; taskId: string; newParentId: string | null; newPosition: number }
     | { type: "reorder"; taskId: string; newPosition: number }
     | { type: "softDelete"; taskId: string }
@@ -242,6 +252,18 @@ export const applyOutlineOp = (tasks: readonly AppTask[], dependencies: readonly
         case "updateTitle":
             return normalize(
                 tasks.map((task) => (task.id === op.taskId ? { ...task, title: op.title } : task)),
+                dependencies,
+            );
+
+        case "updateDescription":
+            return normalize(
+                tasks.map((task) => (task.id === op.taskId ? { ...task, description: op.description } : task)),
+                dependencies,
+            );
+
+        case "updateDueDate":
+            return normalize(
+                tasks.map((task) => (task.id === op.taskId ? { ...task, due_date: op.dueDate } : task)),
                 dependencies,
             );
 

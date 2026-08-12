@@ -6,8 +6,10 @@ import type { OutlineOp } from "@/features/outline/lib/outline-ops";
  * ここに置くのは純粋なデータ構造の操作のみで、Op の実行 (楽観適用 + Server Action) や
  * 逆操作の材料集めは outline-shell.tsx の責務とする (dispatch 時点の optimisticTasks が要るため)。
  *
- * 対象はアウトライン操作 (作成・完了・タイトル変更・移動・並べ替え・ゴミ箱への移動) に限る。
- * DetailPane の説明・期日・依存関係の編集、ゴミ箱画面からの復元・完全削除は履歴対象外 (将来拡張)
+ * 対象はアウトライン操作 (作成・完了・タイトル変更・移動・並べ替え・ゴミ箱への移動) に加え、
+ * DetailPane の説明・期日の編集 (改修 3、`updateDescription` / `updateDueDate` Op) を含む。
+ * DetailPane の依存関係の編集、ゴミ箱画面からの復元・完全削除は依然として履歴対象外 (将来拡張)。
+ * 依存関係は Op リデューサそのものの対象外であり、undo 履歴だけの制約ではない
  */
 
 /** 履歴 1 件。1 回のユーザー操作 (VISUAL の一括完了は複数タスクをまとめて 1 件) に対応する */

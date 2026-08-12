@@ -3,7 +3,6 @@
 import { type ChangeEvent, type JSX, type KeyboardEvent, type MouseEvent, type Ref, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { addDependency } from "@/features/task/actions/add-dependency";
 import { removeDependency } from "@/features/task/actions/remove-dependency";
-import { updateTask } from "@/features/task/actions/update-task";
 import type { TaskErrorCode } from "@/features/task/lib/action-result";
 import type { AppTask, TaskDependency } from "@/types/task";
 import { BlockedReasonBar } from "./blocked-reason-bar";
@@ -25,10 +24,29 @@ type DetailPaneProps = {
      * 編集領域 (タイトル・説明・期日・依存先追加) で `Esc` を押した際、一覧へフォーカスを戻す共通ヘルパー
      *
      * `OutlineShell` が持つ 1 個の関数を props でそのまま渡す (docs/frontend-design.md §6.1)。
-     * 各編集領域のキャンセル処理自体は本コンポーネントのローカルハンドラが担い、
-     * このヘルパーはキャンセル後のフォーカス移動だけを担当する
+     * 各編集領域の `Esc` ハンドラ自体は本コンポーネントのローカルハンドラが担う。
+     * タイトル・説明・期日は全体方針「Esc = 確定」（docs/frontend-design.md §5、追加改修 1）に従って確定する。
+     * 依存先追加候補の `select` だけは方針からの意図的な例外としてキャンセルのままとする (第 6.5 節)。
+     * このヘルパーはいずれの場合も、確定またはキャンセルの処理が終わった後のフォーカス移動だけを担当する
      */
     onEscapeToOutline: () => void;
+    /**
+     * タイトル編集の確定 (改修 3、docs/frontend-design.md §5.2)
+     *
+     * `OutlineShell` の `commitInlineTitleEdit` を props でそのまま渡す。行内タイトル編集 (`i`/`A`) と
+     * 同じ `updateTitle` Op を経由する単一の保存経路であり、変更が無ければ Server Action を投げない判定も
+     * 呼び出し先が担うため、本コンポーネント側では変更有無を判定せずに常に呼んでよい
+     */
+    onCommitTitle: (taskId: string, title: string) => void;
+    /**
+     * 説明編集の確定 (改修 3)
+     *
+     * `updateDescription` Op を経由する。楽観適用が同期的に効くため、呼び出し後は `updateTask` の応答を
+     * 待たずに編集領域を畳んでよい (「保存中」のブロッキング表示は行わない)
+     */
+    onCommitDescription: (taskId: string, description: string) => void;
+    /** 期日編集の確定 (改修 3)。`updateDueDate` Op を経由する。onCommitDescription と同じくブロッキングしない */
+    onCommitDueDate: (taskId: string, dueDate: string | null) => void;
     /** OutlineShell が focusEditor を呼ぶための ref (React 19 では ref を通常の prop として受け取れるため forwardRef は使わない) */
     ref?: Ref<DetailPaneHandle>;
 };
@@ -92,33 +110,37 @@ const isOverdue = (dueDate: string): boolean => {
  *
  * タイトル・状態・期日・完了日時を表示し、blocked の場合は BlockedReasonBar を表示する
  * title は見出し / 入力欄 (input) を、description はプレビュー (MarkdownPreview) / 編集 (MarkdownEditor) を切り替え、
- * 期日は表示 / 編集 (input[type=date]) を切り替え、いずれも編集確定で updateTask を呼んで保存する
- * (失敗時はインラインでエラーを表示する)
+ * 期日は表示 / 編集 (input[type=date]) を切り替える。
+ * いずれも編集確定で `onCommitTitle` / `onCommitDescription` / `onCommitDueDate`（`OutlineShell` が注入する、
+ * それぞれ `updateTitle` / `updateDescription` / `updateDueDate` Op を経由するハンドラ）を呼んで保存する
+ * (改修 3、docs/frontend-design.md §5.2)。
+ * 楽観適用が同期的に効くため、呼び出し後は Server Action の応答を待たずに編集領域を畳んでよい。
+ * 「保存中」のブロッキング表示・disabled は行わない (以前の直接 `updateTask` 呼び出しでは行っていたが撤廃した)。
+ * 保存に失敗した場合は `OutlineShell` の `StatusLine` へエラー表示される (本コンポーネントはそれを待たない)。
  * 依存先は一覧表示・削除 (removeDependency) に加え、候補セレクトからの追加 (addDependency) も行う
+ * (依存関係は Op リデューサの対象外のままであり、この 2 操作は従来通り直接 Server Action を呼んで結果を待つ)
  *
- * 各編集領域 (タイトル / 説明 / 期日 / 依存先追加候補) は `Esc` keydown でその編集をキャンセルする
- * (既存のキャンセルボタンと同じ意味論。未確定の変更を破棄し編集状態を畳む)。
- * キャンセル後は `onEscapeToOutline`（`OutlineShell` の共通ヘルパー）でフォーカスを一覧側へ戻し、
- * document の keydown ハンドラ（`use-outline-keymap.ts`）の `isEditableTarget` 抑止から抜けて NORMAL の操作へ復帰する
- * (docs/frontend-design.md §6.1)
+ * 各編集領域の `Esc` keydown は、全体方針「Esc = 確定して一覧へフォーカスを戻す」
+ * (docs/frontend-design.md §5、追加改修 1) に従い、タイトル・説明・期日のいずれも確定として処理する
+ * (第 6.5 節)。タイトルは空文字のまま `Esc` を押した場合、行内タイトル編集 (`i`/`A`) の空 `Esc` と同じく
+ * インラインエラーを出して編集領域に留まり、フォーカスも一覧へ戻さない。
+ * 依存先追加候補の `select` だけは方針からの意図的な例外としてキャンセル（未確定の選択を破棄し編集状態を畳む）のままとする。
+ * いずれの場合も、確定またはキャンセルの処理が終わった後は `onEscapeToOutline`（`OutlineShell` の共通ヘルパー）で
+ * フォーカスを一覧側へ戻し、document の keydown ハンドラ（`use-outline-keymap.ts`）の `isEditableTarget` 抑止から
+ * 抜けて NORMAL の操作へ復帰する (docs/frontend-design.md §6.1)
  */
-export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, ref }: DetailPaneProps): JSX.Element => {
+export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, onCommitTitle, onCommitDescription, onCommitDueDate, ref }: DetailPaneProps): JSX.Element => {
     // タスク切替時にのみ編集状態をリセットする (レンダー中の state 調整。React 公式の推奨パターンであり
     // useEffect による同期を避けることで useOutlineKeymap 側と同様に「必要な処理だけを行う」構成にする)
     const [lastTaskId, setLastTaskId] = useState<string | null>(task?.id ?? null);
     const [draft, setDraft] = useState(task?.description ?? "");
     const [isEditing, setIsEditing] = useState(false);
-    const [isSaving, setIsSaving] = useState(false);
-    const [error, setError] = useState<string | null>(null);
     const [titleDraft, setTitleDraft] = useState(task?.title ?? "");
     const [isEditingTitle, setIsEditingTitle] = useState(false);
-    const [isSavingTitle, setIsSavingTitle] = useState(false);
     const [titleError, setTitleError] = useState<string | null>(null);
     // 期日編集の draft は input[type=date] の値そのもの (YYYY-MM-DD)。空文字は「期日なし」を表す
     const [dueDateDraft, setDueDateDraft] = useState(task?.due_date ?? "");
     const [isEditingDueDate, setIsEditingDueDate] = useState(false);
-    const [isSavingDueDate, setIsSavingDueDate] = useState(false);
-    const [dueDateError, setDueDateError] = useState<string | null>(null);
     const [dependencyError, setDependencyError] = useState<string | null>(null);
     const [removingDependencyId, setRemovingDependencyId] = useState<string | null>(null);
     const [selectedDependsOnTaskId, setSelectedDependsOnTaskId] = useState("");
@@ -155,7 +177,6 @@ export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, re
             // textarea は編集開始後のレンダーでマウントされるため、フォーカスは attachEditor に委ねる
             pendingEditorFocusRef.current = true;
             setDraft(task.description);
-            setError(null);
             setIsEditing(true);
         },
     }));
@@ -175,13 +196,11 @@ export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, re
         setLastTaskId(currentTaskId);
         setDraft(task?.description ?? "");
         setIsEditing(false);
-        setError(null);
         setTitleDraft(task?.title ?? "");
         setIsEditingTitle(false);
         setTitleError(null);
         setDueDateDraft(task?.due_date ?? "");
         setIsEditingDueDate(false);
-        setDueDateError(null);
         setDependencyError(null);
         setSelectedDependsOnTaskId("");
     }
@@ -250,54 +269,55 @@ export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, re
     };
 
     /**
-     * トリム後のタイトルを保存する
+     * トリム後のタイトルで確定する
      *
      * 空文字は DB 制約 tasks_title_not_blank に反し、その CHECK 違反は TaskErrorCode へ変換できず
-     * mapDbErrorOrThrow が re-throw するため、送信前にここで弾いてインラインエラーにする
+     * mapDbErrorOrThrow が re-throw するため、送信前にここで弾いてインラインエラーにする (クライアント側検証)。
+     * 変更が無いかどうかの判定は `onCommitTitle`（`commitInlineTitleEdit`）側が担うため、ここでは常に呼ぶ。
+     * 保存の成否を待たずに即座に編集領域を畳む (改修 3、失敗時は `OutlineShell` の `StatusLine` へ表示される)。
+     * 戻り値は確定できたかどうか (空文字で弾かれた場合は false)。呼び出し元の `Esc` ハンドラが
+     * 「確定できたときだけ一覧へフォーカスを戻す」を判定するために使う (追加改修 1、inline-title-editor.tsx と同じ規則)
      */
-    const handleSaveTitle = async (): Promise<void> => {
+    const handleSaveTitle = (): boolean => {
         const trimmedTitle = titleDraft.trim();
         if (trimmedTitle === "") {
             setTitleError("タイトルは空にできません");
-            return;
+            return false;
         }
-        // 変更がなければ blur 確定などで無駄な更新を投げない
-        if (trimmedTitle === task.title) {
-            setTitleError(null);
-            setIsEditingTitle(false);
-            return;
-        }
-        setIsSavingTitle(true);
         setTitleError(null);
-        const result = await updateTask({ taskId: task.id, title: trimmedTitle });
-        setIsSavingTitle(false);
-        if (result.ok) {
-            setIsEditingTitle(false);
-            return;
-        }
-        setTitleError(result.message);
+        setIsEditingTitle(false);
+        onCommitTitle(task.id, trimmedTitle);
+        return true;
     };
 
+    /**
+     * タイトル編集中のキー操作
+     *
+     * `Esc` は以前キャンセル（破棄）だったが、全体方針「Esc = 確定して一覧へフォーカスを戻す」
+     * (docs/frontend-design.md §5、追加改修 1) に合わせて確定へ変更した。
+     * 空文字のまま `Esc` を押した場合は確定できないため、`handleSaveTitle` がインラインエラーを出して
+     * 編集領域に留まり、`onEscapeToOutline` も呼ばない (inline-title-editor.tsx の空 Esc と同じ扱い)
+     */
     const handleTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-        // IME 変換確定の Enter/Esc を編集確定・取り消しと取り違えない (SearchOverlay と同じ扱い)
+        // IME 変換確定の Enter/Esc を編集確定と取り違えない (SearchOverlay と同じ扱い)
         if (event.nativeEvent.isComposing) {
             return;
         }
         if (event.key === "Enter") {
             event.preventDefault();
-            void handleSaveTitle();
-        } else if (event.key === "Escape") {
+            handleSaveTitle();
+            return;
+        }
+        if (event.key === "Escape") {
             event.preventDefault();
-            handleCancelTitleEdit();
-            onEscapeToOutline();
+            if (handleSaveTitle()) {
+                onEscapeToOutline();
+            }
         }
     };
 
     const handleTitleBlur = (): void => {
-        if (isSavingTitle) {
-            return;
-        }
-        void handleSaveTitle();
+        handleSaveTitle();
     };
 
     /**
@@ -312,69 +332,89 @@ export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, re
 
     const handleStartEdit = (): void => {
         setDraft(task.description);
-        setError(null);
         setIsEditing(true);
     };
 
     const handleCancelEdit = (): void => {
         setDraft(task.description);
-        setError(null);
         setIsEditing(false);
     };
 
-    /** 説明編集中の `Esc`。IME 変換確定と取り違えない (handleTitleKeyDown と同じ扱い) */
+    /**
+     * 説明編集の確定。draft をそのまま `onCommitDescription` へ渡し、応答を待たずに編集領域を畳む
+     *
+     * 変更が無いかどうかの判定は `onCommitDescription`（`commitDescriptionEdit`）側が担うため、
+     * ここでは常に呼ぶ (handleSaveTitle と同じ分担、改修 3)
+     */
+    const handleCommitDescription = (): void => {
+        setIsEditing(false);
+        onCommitDescription(task.id, draft);
+    };
+
+    /**
+     * 説明編集中のキー操作 (改修 1、docs/frontend-design.md §6.5)
+     *
+     * `Ctrl+Enter` (Mac の `Cmd+Enter` = `metaKey` も同様) と `Esc` はいずれも確定として扱う
+     * (以前の Esc = キャンセルから意味論を変更した)。`Esc` は確定後さらに `onEscapeToOutline` で
+     * 一覧へフォーカスを戻すが、`Ctrl+Enter` はテキストエリア内での確定操作のため戻さない。
+     * IME 変換確定の Enter/Esc は取り違えない (handleTitleKeyDown と同じ扱い)
+     */
     const handleDescriptionKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
         if (event.nativeEvent.isComposing) {
             return;
         }
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            handleCommitDescription();
+            return;
+        }
         if (event.key === "Escape") {
             event.preventDefault();
-            handleCancelEdit();
+            handleCommitDescription();
             onEscapeToOutline();
         }
     };
 
-    const handleSave = async (): Promise<void> => {
-        setIsSaving(true);
-        setError(null);
-        const result = await updateTask({ taskId: task.id, description: draft });
-        setIsSaving(false);
-        if (result.ok) {
-            setIsEditing(false);
-            return;
-        }
-        setError(result.message);
-    };
-
     const handleStartEditDueDate = (): void => {
         setDueDateDraft(task.due_date ?? "");
-        setDueDateError(null);
         setIsEditingDueDate(true);
     };
 
     const handleCancelEditDueDate = (): void => {
         setDueDateDraft(task.due_date ?? "");
-        setDueDateError(null);
         setIsEditingDueDate(false);
     };
 
-    /** 期日編集中の `Esc`。input[type=date] は IME を伴わないが、他の編集領域と同じ扱いに揃える */
+    /**
+     * 期日編集中の `Esc`
+     *
+     * 以前はキャンセル（破棄）だったが、全体方針「Esc = 確定して一覧へフォーカスを戻す」
+     * (docs/frontend-design.md §5、追加改修 1) に合わせて確定へ変更した。
+     * 期日には空文字禁止のような検証が無く（空文字は「期日なし」として常に確定できる）、
+     * `handleSaveDueDate` は必ず編集領域を畳んで true 相当になるため、タイトルのような
+     * 戻り値ガードは不要で常に `onEscapeToOutline` を呼んでよい。
+     * input[type=date] は IME を伴わないが、他の編集領域と同じ扱いに揃える
+     */
     const handleDueDateKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
         if (event.nativeEvent.isComposing) {
             return;
         }
         if (event.key === "Escape") {
             event.preventDefault();
-            handleCancelEditDueDate();
+            handleSaveDueDate();
             onEscapeToOutline();
         }
     };
 
     /**
-     * 依存先追加の候補 `select` 中の `Esc`
+     * 依存先追加の候補 `select` 中の `Esc` (全体方針「Esc = 確定」からの意図的な例外、追加改修 1)
      *
-     * 追加の確定前提の「編集中」state を持たないため、キャンセルの意味論は
-     * 未確定の選択 (`selectedDependsOnTaskId`) を破棄して未選択へ戻すこととする
+     * この `select` はタイトル・説明・期日のような「下書きを確定する」編集ではなく、
+     * 依存先の候補を選ぶだけの一時的な選択であり、選択自体はまだ何も書き込んでいない
+     * (確定＝追加には別途「追加」ボタン押下 → `addDependency` の Server Action 呼び出しが要る)。
+     * 「入力中の値」という概念が薄く、`Esc` で確定したことにしても実際には何も追加されないまま
+     * 編集領域だけ畳まれ、「確定したのに反映されない」という誤解を招くだけなので、
+     * ここだけ従来通りキャンセル（未確定の選択を破棄して未選択へ戻す）を維持する
      */
     const handleDependencySelectKeyDown = (event: KeyboardEvent<HTMLSelectElement>): void => {
         if (event.nativeEvent.isComposing) {
@@ -389,22 +429,16 @@ export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, re
     };
 
     /**
-     * 期日を保存する
+     * 期日を確定する
      *
      * input[type=date] はブラウザのローカルタイムゾーンでの YYYY-MM-DD を返すが、
      * due_date は日付のみの概念 (req.md §6) なのでタイムゾーン変換せずそのまま渡す。
-     * 空文字 (クリアボタン押下、または入力欄を空にした状態) は null として期日を解除する
+     * 空文字 (クリアボタン押下、または入力欄を空にした状態) は null として期日を解除する。
+     * 変更が無いかどうかの判定は `onCommitDueDate`（`commitDueDateEdit`）側が担うため、常に呼ぶ (改修 3)
      */
-    const handleSaveDueDate = async (): Promise<void> => {
-        setIsSavingDueDate(true);
-        setDueDateError(null);
-        const result = await updateTask({ taskId: task.id, dueDate: dueDateDraft === "" ? null : dueDateDraft });
-        setIsSavingDueDate(false);
-        if (result.ok) {
-            setIsEditingDueDate(false);
-            return;
-        }
-        setDueDateError(result.message);
+    const handleSaveDueDate = (): void => {
+        setIsEditingDueDate(false);
+        onCommitDueDate(task.id, dueDateDraft === "" ? null : dueDateDraft);
     };
 
     return (
@@ -420,32 +454,17 @@ export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, re
                         onChange={handleTitleChange}
                         onKeyDown={handleTitleKeyDown}
                         onBlur={handleTitleBlur}
-                        disabled={isSavingTitle}
                         aria-label="タイトルを編集"
                         placeholder="タスクのタイトルを入力…"
-                        className="w-full rounded-md border border-border bg-bg px-3 py-2 text-base font-semibold text-text outline-none focus:border-accent disabled:opacity-60"
+                        className="w-full rounded-md border border-border bg-bg px-3 py-2 text-base font-semibold text-text outline-none focus:border-accent"
                     />
                     {titleError !== null ? <p className="text-xs text-overdue">{titleError}</p> : null}
                     <div className="flex justify-end gap-2">
-                        <button
-                            type="button"
-                            onMouseDown={handleTitleButtonMouseDown}
-                            onClick={handleCancelTitleEdit}
-                            disabled={isSavingTitle}
-                            className="rounded-md border border-border px-3 py-1 text-xs text-text-dim disabled:opacity-60"
-                        >
+                        <button type="button" onMouseDown={handleTitleButtonMouseDown} onClick={handleCancelTitleEdit} className="rounded-md border border-border px-3 py-1 text-xs text-text-dim">
                             キャンセル
                         </button>
-                        <button
-                            type="button"
-                            onMouseDown={handleTitleButtonMouseDown}
-                            onClick={() => {
-                                void handleSaveTitle();
-                            }}
-                            disabled={isSavingTitle}
-                            className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-accent-ink disabled:opacity-60"
-                        >
-                            {isSavingTitle ? "保存中…" : "保存"}
+                        <button type="button" onMouseDown={handleTitleButtonMouseDown} onClick={handleSaveTitle} className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-accent-ink">
+                            保存
                         </button>
                     </div>
                 </div>
@@ -489,40 +508,26 @@ export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, re
                                     setDueDateDraft(event.target.value);
                                 }}
                                 onKeyDown={handleDueDateKeyDown}
-                                disabled={isSavingDueDate}
                                 aria-label="期日を編集"
-                                className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-text outline-none focus:border-accent disabled:opacity-60"
+                                className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-text outline-none focus:border-accent"
                             />
                             <button
                                 type="button"
                                 onClick={() => {
                                     setDueDateDraft("");
                                 }}
-                                disabled={isSavingDueDate || dueDateDraft === ""}
+                                disabled={dueDateDraft === ""}
                                 className="rounded-md border border-border px-2 py-1 text-xs text-text-dim disabled:opacity-60"
                             >
                                 クリア
                             </button>
                         </div>
-                        {dueDateError !== null ? <p className="text-xs text-overdue">{dueDateError}</p> : null}
                         <div className="flex justify-end gap-2">
-                            <button
-                                type="button"
-                                onClick={handleCancelEditDueDate}
-                                disabled={isSavingDueDate}
-                                className="rounded-md border border-border px-3 py-1 text-xs text-text-dim disabled:opacity-60"
-                            >
+                            <button type="button" onClick={handleCancelEditDueDate} className="rounded-md border border-border px-3 py-1 text-xs text-text-dim">
                                 キャンセル
                             </button>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    void handleSaveDueDate();
-                                }}
-                                disabled={isSavingDueDate}
-                                className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-accent-ink disabled:opacity-60"
-                            >
-                                {isSavingDueDate ? "保存中…" : "保存"}
+                            <button type="button" onClick={handleSaveDueDate} className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-accent-ink">
+                                保存
                             </button>
                         </div>
                     </div>
@@ -604,21 +609,13 @@ export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, re
 
                 {isEditing ? (
                     <div className="space-y-2">
-                        <MarkdownEditor ref={attachEditor} value={draft} onChange={setDraft} disabled={isSaving} onKeyDown={handleDescriptionKeyDown} />
-                        {error !== null ? <p className="text-xs text-overdue">{error}</p> : null}
+                        <MarkdownEditor ref={attachEditor} value={draft} onChange={setDraft} onKeyDown={handleDescriptionKeyDown} />
                         <div className="flex justify-end gap-2">
-                            <button type="button" onClick={handleCancelEdit} disabled={isSaving} className="rounded-md border border-border px-3 py-1 text-xs text-text-dim disabled:opacity-60">
+                            <button type="button" onClick={handleCancelEdit} className="rounded-md border border-border px-3 py-1 text-xs text-text-dim">
                                 キャンセル
                             </button>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    void handleSave();
-                                }}
-                                disabled={isSaving}
-                                className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-accent-ink disabled:opacity-60"
-                            >
-                                {isSaving ? "保存中…" : "保存"}
+                            <button type="button" onClick={handleCommitDescription} className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-accent-ink">
+                                保存
                             </button>
                         </div>
                     </div>

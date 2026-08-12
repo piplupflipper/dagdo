@@ -128,11 +128,13 @@ export const outlineKeymap: readonly KeymapEntry[] = [
     // NORMAL: 行内編集
     // Enter / Escape は InlineTitleEditor のローカルハンドラが処理するためのドキュメント専用エントリ (run なし)。
     // 編集中はフォーカスが input にあり、dispatcher は isEditableTarget で手前から素通しするため、
-    // ここに run を持たせても呼ばれない
+    // ここに run を持たせても呼ばれない。
+    // Escape は以前「取り消す」だったが、確定に変更した (改修 2)。破棄の導線は無くなるが、
+    // 確定後は `u` (undo) で直前のタイトルへ戻せるため実害はない
     { keys: "i", mode: "NORMAL", category: "行内編集", description: "カーソル行のタイトルを行内編集 (キャレットは先頭)", run: ({ handlers }) => handlers.startInlineTitleEdit("start") },
     { keys: "A", mode: "NORMAL", category: "行内編集", description: "カーソル行のタイトルを行内編集 (キャレットは末尾)", run: ({ handlers }) => handlers.startInlineTitleEdit("end") },
     { keys: "Enter", mode: "NORMAL", category: "行内編集", description: "行内編集を確定 (詳細ペインへは移らない)" },
-    { keys: "Escape", mode: "NORMAL", category: "行内編集", description: "行内編集を取り消す" },
+    { keys: "Escape", mode: "NORMAL", category: "行内編集", description: "行内編集を確定する (取り消しではない。元に戻すには u)" },
 
     // NORMAL: 構造変更
     { keys: "J", mode: "NORMAL", category: "構造変更", description: "同一階層で 1 つ下へ移動", run: ({ handlers }) => handlers.moveCursorSibling("down") },

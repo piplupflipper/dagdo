@@ -143,6 +143,42 @@ describe("applyOutlineOp: complete による依存先タスクの is_blocked 解
     });
 });
 
+describe("applyOutlineOp: updateDescription / updateDueDate の単純フィールドパッチ", () => {
+    it("updateDescription は対象の description だけを書き換え、他行・他フィールドに影響しない", () => {
+        const tasks = [task({ id: "a", position: 0 }), task({ id: "b", position: 1 })];
+        const result = applyOutlineOp(tasks, [], { type: "updateDescription", taskId: "a", description: "新しい説明" });
+        const map = byId(result);
+        expect(map.get("a")?.description).toBe("新しい説明");
+        expect(map.get("a")?.position).toBe(0);
+        expect(map.get("b")?.description).toBe("");
+    });
+
+    it("updateDueDate は due_date を書き換える (null で期日解除)", () => {
+        const tasks = [task({ id: "a", position: 0 })];
+        const withDueDate = applyOutlineOp(tasks, [], { type: "updateDueDate", taskId: "a", dueDate: "2026-08-20" });
+        expect(byId(withDueDate).get("a")?.due_date).toBe("2026-08-20");
+
+        const cleared = applyOutlineOp(withDueDate, [], { type: "updateDueDate", taskId: "a", dueDate: null });
+        expect(byId(cleared).get("a")?.due_date).toBeNull();
+    });
+
+    it("updateDescription / updateDueDate は sort_path / effective_parent_id / is_blocked を変えない", () => {
+        const tasks = [task({ id: "blocker", position: 0 }), task({ id: "blocked", parentId: "blocker", position: 0 })];
+        const deps = [dependency("blocked", "blocker")];
+        const before = byId(applyOutlineOp(tasks, deps, { type: "reopen", taskId: "blocker" }));
+        const after = byId(applyOutlineOp(tasks, deps, { type: "updateDescription", taskId: "blocked", description: "説明を変更" }));
+        expect(after.get("blocked")?.sort_path).toEqual(before.get("blocked")?.sort_path);
+        expect(after.get("blocked")?.effective_parent_id).toEqual(before.get("blocked")?.effective_parent_id);
+        expect(after.get("blocked")?.is_blocked).toEqual(before.get("blocked")?.is_blocked);
+    });
+
+    it("未知の taskId を指定しても他行を書き換えない (該当行が無いので何も変わらない)", () => {
+        const tasks = [task({ id: "a", position: 0 })];
+        const result = applyOutlineOp(tasks, [], { type: "updateDescription", taskId: "unknown", description: "無視される" });
+        expect(byId(result).get("a")?.description).toBe("");
+    });
+});
+
 describe("applyOutlineOp: create の兄弟末尾/途中挿入", () => {
     it("position を省略すると兄弟グループの末尾に追加する", () => {
         const tasks = [task({ id: "a", position: 0 }), task({ id: "b", position: 1 })];

@@ -9,9 +9,14 @@ export type InlineTitleEditorProps = {
     initialTitle: string;
     /** 編集開始時のキャレット位置 */
     caret: InlineTitleCaret;
-    /** `Enter` または blur による確定。トリム済みで空でないタイトルが渡る */
+    /** `Enter` / `Esc` / blur による確定。トリム済みで空でないタイトルが渡る */
     onCommit: (title: string) => void;
-    /** `Esc` による取り消し。空文字のまま blur した場合もこちらを呼ぶ (空文字は保存できないため) */
+    /**
+     * 空文字のまま blur した場合の取り消し (空文字は保存できないため元のタイトルへ戻す)
+     *
+     * 以前は `Esc` もこちらを呼んでいたが、`Esc` を確定に変更した (改修 2) ため、
+     * 現在この関数を呼ぶ経路は空文字 blur のみである
+     */
     onCancel: () => void;
     /**
      * 行 (`role="option"` の要素) へフォーカスを戻す
@@ -24,10 +29,13 @@ export type InlineTitleEditorProps = {
 };
 
 /**
- * アウトライン 1 行のタイトルを行内編集する input (docs/frontend-design.md §6.1)
+ * アウトライン 1 行のタイトルを行内編集する input (docs/frontend-design.md §6.1, §6.4)
  *
  * 編集中かどうかを持つのは `OutlineShell` のローカル state だけで、このコンポーネントは
- * 下書き文字列と空文字エラーのみを持つ。確定は `Enter` / blur、取り消しは `Esc` とし、
+ * 下書き文字列と空文字エラーのみを持つ。確定は `Enter` / `Esc` / blur のいずれでも行う (改修 2。
+ * 以前は `Esc` が取り消しだったが、確定に変更した)。
+ * `Esc` によって明示的な破棄の導線は無くなるが、確定後は `u` (undo) で直前のタイトルへ戻せるため
+ * 実害はない (docs/frontend-design.md §5.2 の undo 履歴、Op は `updateTitle`)。
  * `Enter` での確定は NORMAL に戻すだけで DetailPane へは連鎖させない (改めて `Enter` を押す仕様)
  */
 export const InlineTitleEditor = ({ initialTitle, caret, onCommit, onCancel, focusRow }: InlineTitleEditorProps): JSX.Element => {
@@ -98,14 +106,11 @@ export const InlineTitleEditor = ({ initialTitle, caret, onCommit, onCancel, foc
         if (event.nativeEvent.isComposing) {
             return;
         }
-        if (event.key === "Enter") {
+        if (event.key === "Enter" || event.key === "Escape") {
             event.preventDefault();
+            // Esc も確定として扱う (改修 2)。空文字のままなら commit() が弾いてインラインエラーを出し、
+            // Enter で空文字のまま確定しようとした場合と同じ挙動になる (編集は続行、行へは戻さない)
             commit(true);
-            return;
-        }
-        if (event.key === "Escape") {
-            event.preventDefault();
-            cancel(true);
         }
     };
 

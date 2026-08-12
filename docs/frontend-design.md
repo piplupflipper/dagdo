@@ -255,6 +255,21 @@ Zustand ストアはどの feature にも属さない横断的な UI 状態で�
 
 ## 5. 状態設計
 
+本章・第 6 章の個別設計に先立ち、編集 UI 全体を貫く 2 つの方針を確定事項として定める。
+
+第一に、入力時の `Esc` は下書きの破棄ではなく確定として扱い、確定後は一覧へフォーカスを戻す。
+これは vim のノーマルモード復帰と同じメンタルモデルである。
+下書きを破棄したい場合は各編集領域が持つ明示的な「キャンセル」ボタンを使う。
+確定そのものを取り消したい場合は `u`（undo、第 5.2 節）を使う。
+この方針の具体的な適用は、行内タイトル編集の `Esc`（第 6.4 節）と `DetailPane` 各編集領域の `Esc`（第 6.5 節）で個別に述べる。
+依存先追加候補の `select`（第 6.5 節）はこの方針からの意図的な例外であり、理由も同節に明記する。
+
+第二に、更新系の fetch（Server Action）は基本的に非同期で行い、UI をブロックしない。
+`OutlineOp` リデューサ（第 5.2 節）による楽観反映で確定した瞬間に UI へ反映し、Server Action の応答は待たない。
+失敗した場合はステータスライン（`StatusLine`）で通知する。
+「保存中」のようなブロッキング表示・disabled は置かない。
+この方針の適用範囲は第 5.2 節が扱う `OutlineOp` の対象操作全般であり、依存関係の追加・削除（`addDependency` / `removeDependency`）のように Op リデューサの対象外の操作には及ばない（第 5.2 節）。
+
 ### 5.1 Zustand ストア設計
 
 モードは `NORMAL` / `VISUAL` / `SEARCH` の 3 状態を持つステートマシンとして実装する（確定事項）。
@@ -326,8 +341,9 @@ type OutlineActions = {
 Zustand には「どのタスクにカーソルがあるか」「どの範囲が選択されているか」といった UI 座標的な状態のみを置き、タスクの内容そのものは一切保持しない。
 この分離により、ストアのシリアライズ範囲が小さく保たれ、タスクデータの再取得（revalidate）とカーソル位置のようなセッション的な UI 状態が互いに独立して更新できる。
 
-全構造操作（作成・完了・タイトル変更・移動・並べ替え・ゴミ箱への移動・復元）は、「表示状態 = reduce(サーバー由来 tasks, pendingOps)」という単一リデューサ方式で表す（確定事項）。
-1 回のユーザー操作（キー入力・dnd ドロップ）を discriminated union の `OutlineOp`（`features/outline/lib/outline-ops.ts`）1 件に対応させ、`useOptimistic(initialTasks, (state, op) => applyOutlineOp(state, dependencies, op))` の第 2 引数（reducer）から `applyOutlineOp` をそのまま呼ぶ。
+全構造操作（作成・完了・タイトル変更・移動・並べ替え・ゴミ箱への移動・復元）に加え、DetailPane の説明・期日の編集も、「表示状態 = reduce(サーバー由来 tasks, pendingOps)」という単一リデューサ方式で表す（確定事項）。
+説明・期日の編集を Op リデューサへ含めたのは改修 3（本節後半）の変更であり、それ以前は DetailPane が直接 `updateTask` を呼び、応答を待つ間「保存中」でブロッキングしていた。
+1 回のユーザー操作（キー入力・dnd ドロップ・DetailPane の編集確定）を discriminated union の `OutlineOp`（`features/outline/lib/outline-ops.ts`）1 件に対応させ、`useOptimistic(initialTasks, (state, op) => applyOutlineOp(state, dependencies, op))` の第 2 引数（reducer）から `applyOutlineOp` をそのまま呼ぶ。
 
 ```typescript
 type OutlineOp =
@@ -335,11 +351,19 @@ type OutlineOp =
     | { type: "complete"; taskId: string }
     | { type: "reopen"; taskId: string }
     | { type: "updateTitle"; taskId: string; title: string }
+    | { type: "updateDescription"; taskId: string; description: string } // DetailPane の説明編集 (改修 3)
+    | { type: "updateDueDate"; taskId: string; dueDate: string | null } // DetailPane の期日編集 (改修 3)
     | { type: "move"; taskId: string; newParentId: string | null; newPosition: number } // indent/outdent/dnd reparent
     | { type: "reorder"; taskId: string; newPosition: number } // 同一 actual parent 内の並べ替え
     | { type: "softDelete"; taskId: string }
     | { type: "restore"; taskId: string; snapshot: AppTask };
 ```
+
+`updateDescription` / `updateDueDate` は `updateTitle` と同じ単純なフィールドパッチであり、`applyOutlineOp` の `normalize`（後述）が読む `parent_id` / `position` / `completed_at` のいずれにも影響しない。
+DetailPane 側の呼び出し窓口は `commitDescriptionEdit` / `commitDueDateEdit`（`outline-shell.tsx`）であり、`commitInlineTitleEdit`（タイトル変更、第 6.4 節）と同じ形（楽観適用 → `updateTask` → 失敗時ステータスライン表示 → 成功時 undo 履歴へ記録）を取る。
+楽観適用が同期的に効くため、DetailPane は `updateTask` の応答を待たずに編集領域を畳んでよく、「保存中」のブロッキング表示・disabled は不要になる（改修 3 で撤廃）。
+DetailPane のタイトル編集も同じ経路に統合し、行内タイトル編集（`i`/`A`、第 6.4 節）と `commitInlineTitleEdit` を共有する。
+依存関係（`task_dependencies`）の追加・削除は本節の対象外のままであり、`DetailPane` が従来通り `addDependency` / `removeDependency` を直接呼んで応答を待つ。
 
 `applyOutlineOp(tasks, dependencies, op)` は 1 Op を適用したうえで、`app_tasks` View（`supabase/migrations/20260808000003_app_tasks_view.sql`）と同じ意味論で `sort_path` / `effective_parent_id` / `is_blocked` を全行再計算する（normalize）純関数である。
 `move` / `reorder` の position 採番規則は `move_task` / `reorder_tasks` RPC（`supabase/migrations/20260808000005_rpc_functions.sql`、`20260808000007_reorder_tasks_exclude_deleted_siblings.sql`）の挙動にそのまま合わせる。
@@ -358,7 +382,9 @@ snapshot は dispatch 時点の `optimisticTasks` から取得して Op へ閉�
 Phase 2 として、Server Action が成功で確定した Op だけを対象に undo（`u`）/ redo（`U`）の履歴スタックを持つ（第 6.1 節）。
 履歴（`features/outline/lib/undo-history.ts`）は `{ label, undoOps, redoOps }` のエントリを積む純粋なスタック操作であり、逆操作の材料（変更前の `parent_id` / `position` / `title` / `completed_at`）は dispatch 時点の `optimisticTasks` から取得してエントリへ閉じ込める。
 新しい操作が確定すると redo スタックは破棄する（vim に倣う）。VISUAL の一括完了（`completeSelection`）は成功した taskId 群を 1 エントリへまとめる。
-対象はアウトライン操作に限り、`DetailPane` の説明・期日・依存関係の編集やゴミ箱画面からの復元・完全削除は履歴の対象外とする（将来拡張）。
+対象はアウトライン操作に加え、`DetailPane` の説明・期日の編集を含む（改修 3 で追加）。
+`DetailPane` の依存関係の編集やゴミ箱画面からの復元・完全削除は履歴の対象外のままとする（将来拡張）。
+依存関係が対象外なのは Op リデューサそのものの対象外だからであり（本節冒頭）、undo 履歴だけの制約ではない。
 
 ### 5.3 派生値
 
@@ -525,7 +551,10 @@ trie の構築（`buildKeymapTries`）と 1 打鍵ぶんの待機状態遷移（
 
 `i` / `A`（第 6.1 節）はカーソル行のタイトルを行内編集する。
 キャレット位置は vim に倣い `i` が先頭、`A` が末尾とする（`DetailPane` のタイトル編集が全選択にしているのとは使い分ける）。
-確定は `Enter` または blur、取り消しは `Esc` とする。
+確定は `Enter` / `Esc` / blur のいずれでも行う。
+`Esc` は以前キャンセル（取り消し）だったが、全体方針「Esc = 確定」（第 5 章冒頭）に合わせて確定に変更した（改修 2、確定事項）。
+`Esc` によって明示的な破棄の導線は無くなるが、確定した操作は `updateTitle` Op として undo 履歴（第 5.2 節）へ記録されるため、`u` で直前のタイトルへ戻せる。
+この復元手段があるため、`Esc` から破棄の導線が無くなることを実害とはみなさない。
 `Enter` による確定は NORMAL に戻すだけとし、`DetailPane` へは連鎖させない（移りたい場合は改めて `Enter` を押す）。
 空文字（トリム後）は DB 制約 `tasks_title_not_blank` の CHECK 違反になり `TaskErrorCode` へ変換できないため、送信前にクライアント側で弾いてインラインにエラーを出す（第 8.2 節の `DetailPane` と同じ理由）。
 blur 時に空文字だった場合は保存できないため取り消し扱いとし、元のタイトルへ戻す。
@@ -556,12 +585,27 @@ IME 変換確定の `Enter` / `Esc` は `isComposing` を見て編集の確定�
 
 ### 6.5 編集領域からの Esc によるフォーカス復帰
 
-`DetailPane`（タイトル・説明・期日・依存先追加候補）と `MobileDetailSheet` 内の同じ編集 UI は、`Esc` keydown でその編集をキャンセルし、一覧へフォーカスを戻す（確定事項）。
+`DetailPane`（タイトル・説明・期日・依存先追加候補）と `MobileDetailSheet` 内の同じ編集 UI は、`Esc` keydown でその編集領域を終え、一覧へフォーカスを戻す（確定事項）。
 これにより、マウスで一覧外をクリックしなくても `Esc` だけでキーボード操作（NORMAL）へ復帰できる。
 
-キャンセルの意味論は各編集領域の既存のキャンセル手段と揃える。
-タイトル・説明・期日は既存の「キャンセル」ボタンと同じ処理（下書きを元の値へ戻し編集状態を畳む）を呼ぶ。
-依存先追加候補の `select` はボタン押下による確定前提の編集状態を持たないため、未確定の選択（`selectedDependsOnTaskId`）を破棄して未選択へ戻すことをキャンセルとする。
+`Esc` はタイトル・説明・期日のいずれも確定として処理する（全体方針「Esc = 確定」、第 5 章冒頭・確定事項）。
+以前はタイトル・期日を既存の「キャンセル」ボタンと同じ意味論（下書きを元の値へ戻し編集状態を畳む）で処理していたが、追加改修 1 でこの全体方針に揃えた。
+
+タイトルの確定は `onCommitTitle`（`commitInlineTitleEdit`、第 5.2 節）を呼ぶ。
+空文字（トリム後）のまま `Esc` を押した場合は確定できないため、行内タイトル編集（`i`/`A`、第 6.4 節）の空 `Esc` と同じくインラインエラーを出して編集領域に留まり、フォーカスも一覧へ戻さない。
+期日の確定は `onCommitDueDate`（`commitDueDateEdit`、第 5.2 節）を呼ぶ。
+期日には空文字禁止のような検証がなく（空文字は「期日なし」として常に確定できる）、`Esc` は必ず確定して一覧へフォーカスを戻す。
+
+説明の確定は `onCommitDescription`（`commitDescriptionEdit`、第 5.2 節）を呼ぶ（改修 1、確定事項）。
+説明編集では `Ctrl+Enter`（Mac の `Cmd+Enter` = `metaKey` も同様）でも確定できる。
+`Esc` と `Ctrl+Enter` はいずれも同じ `commitDescriptionEdit` を呼ぶ点で同じだが、`Esc` はその後さらに一覧へフォーカスを戻す一方、`Ctrl+Enter` はテキストエリア内での確定操作のためフォーカスを戻さない。
+
+タイトル・説明・期日のいずれも、編集前と同値のまま確定した場合は `commitInlineTitleEdit` と同じ規則で Server Action を投げずに編集領域だけを畳む。
+明示的な「キャンセル」ボタンはタイトル・説明・期日のすべてに残しており、下書きを破棄したい場合はそちらを使う（全体方針が挙げる「破棄したい場合はキャンセルボタン」の受け皿）。
+
+依存先追加候補の `select` だけは、この全体方針からの意図的な例外としてキャンセル（未確定の選択を破棄して未選択へ戻す）のままとする。
+この `select` はタイトル・説明・期日のような「下書きを確定する」編集ではなく、依存先の候補を選ぶだけの一時的な選択であり、選択自体はまだ何も書き込んでいない（確定＝追加には別途「追加」ボタン押下 → `addDependency` の Server Action 呼び出しが要る）。
+「入力中の値」という概念が薄く、`Esc` で確定したことにしても実際には何も追加されないまま編集領域だけ畳まれ、「確定したのに反映されない」という誤解を招くだけであるため、ここだけ従来通りのキャンセルを維持する。
 
 フォーカスを一覧へ戻す実装は、`OutlineShell` が持つ 1 個の共通ヘルパー `focusOutlineList` に集約する（確定事項）。
 `DetailPane` はこれを `onEscapeToOutline` として props で受け取り、各編集領域のローカルな `Esc` ハンドラから呼ぶ。
@@ -572,7 +616,7 @@ IME 変換確定の `Enter` / `Esc` は `isComposing` を見て編集の確定�
 フォーカスが一覧側の要素（`input` / `textarea` / `contenteditable` ではない要素）へ移ると、`isEditableTarget`（第 6.2 節）の抑止が外れ、document の keydown ハンドラが再びキーを受け取る。
 `focusOutlineList` の呼び出しは、この抑止を外すための blur だけでは行われない「フォーカス位置を一覧側へ明示する」ことを目的としており、フォーカス復帰そのものは blur の時点で（抑止が外れる意味では）既に完了している。
 
-IME 変換確定中の `Esc`（`event.nativeEvent.isComposing`）は、いずれの編集領域でも第 6.2 節・第 6.4 節と同じ扱いで無視し、キャンセルとして処理しない。
+IME 変換確定中の `Esc`（`event.nativeEvent.isComposing`）は、いずれの編集領域でも第 6.2 節・第 6.4 節と同じ扱いで無視し、その編集領域の確定・取り消しのどちらとしても処理しない。
 
 ---
 

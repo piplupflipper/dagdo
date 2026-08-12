@@ -77,12 +77,12 @@ describe("確定と取り消し", () => {
         expect(onCommit).toHaveBeenCalledWith("余白つき");
     });
 
-    it("Esc は取り消して、フォーカスを行へ戻す", () => {
+    it("Esc は変更後のタイトルで確定し、フォーカスを行へ戻す (改修 2。以前は取り消しだった)", () => {
         const { input, row, onCommit, onCancel } = renderEditor();
-        fireEvent.change(input, { target: { value: "破棄される" } });
+        fireEvent.change(input, { target: { value: "Esc で確定される" } });
         fireEvent.keyDown(input, { key: "Escape" });
-        expect(onCancel).toHaveBeenCalledTimes(1);
-        expect(onCommit).not.toHaveBeenCalled();
+        expect(onCommit).toHaveBeenCalledWith("Esc で確定される");
+        expect(onCancel).not.toHaveBeenCalled();
         expect(document.activeElement).toBe(row);
     });
 
@@ -119,6 +119,16 @@ describe("空タイトル", () => {
         expect(onCommit).not.toHaveBeenCalled();
         expect(screen.getByRole("alert").textContent).toBe("タイトルは空にできません");
         expect(document.activeElement).toBe(input);
+    });
+
+    it("Esc で空文字のまま確定しようとした場合も、Enter と同じくインラインエラーを出して編集を続ける", () => {
+        const { input, row, onCommit, onCancel } = renderEditor();
+        fireEvent.change(input, { target: { value: "   " } });
+        fireEvent.keyDown(input, { key: "Escape" });
+        expect(onCommit).not.toHaveBeenCalled();
+        expect(onCancel).not.toHaveBeenCalled();
+        expect(screen.getByRole("alert").textContent).toBe("タイトルは空にできません");
+        expect(document.activeElement).not.toBe(row);
     });
 
     it("入力を再開するとエラー表示を消す", () => {

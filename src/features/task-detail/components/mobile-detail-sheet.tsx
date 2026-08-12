@@ -13,8 +13,14 @@ type MobileDetailSheetProps = {
     isInert: boolean;
     /** 背景タップ・閉じるボタンから呼ばれる。OutlineShell 側でカーソルを解除してシートを閉じる */
     onClose: () => void;
-    /** DetailPane の編集領域での `Esc` キャンセル後、一覧へフォーカスを戻す共通ヘルパー (docs/frontend-design.md §6.1)。ハードウェアキーボード接続時のために PC と同じ挙動を適用する */
+    /** DetailPane の編集領域での `Esc` 終了後、一覧へフォーカスを戻す共通ヘルパー (docs/frontend-design.md §6.1)。ハードウェアキーボード接続時のために PC と同じ挙動を適用する */
     onEscapeToOutline: () => void;
+    /** DetailPane のタイトル編集の確定 (改修 3、docs/frontend-design.md §5.2)。行内タイトル編集と同じ `updateTitle` Op を経由する */
+    onCommitTitle: (taskId: string, title: string) => void;
+    /** DetailPane の説明編集の確定 (改修 3) */
+    onCommitDescription: (taskId: string, description: string) => void;
+    /** DetailPane の期日編集の確定 (改修 3) */
+    onCommitDueDate: (taskId: string, dueDate: string | null) => void;
 };
 
 /**
@@ -26,7 +32,18 @@ type MobileDetailSheetProps = {
  * このコンポーネント自身が md 以上で display:none になる (md:hidden)。
  * 詳細表示・依存グラフのロジックは DetailPane / DagPanel をそのまま再利用し、重複させない
  */
-export const MobileDetailSheet = ({ task, allTasks, dependencies, flashTaskId, isInert, onClose, onEscapeToOutline }: MobileDetailSheetProps): JSX.Element => {
+export const MobileDetailSheet = ({
+    task,
+    allTasks,
+    dependencies,
+    flashTaskId,
+    isInert,
+    onClose,
+    onEscapeToOutline,
+    onCommitTitle,
+    onCommitDescription,
+    onCommitDueDate,
+}: MobileDetailSheetProps): JSX.Element => {
     // カーソル (選択タスク) の有無をそのまま開閉状態とする。閉じる = カーソル解除なので、
     // 同じ行を再度タップすれば必ず開き直せる (シート側に開閉 state を二重に持たない)
     const isOpen = task !== null;
@@ -57,7 +74,15 @@ export const MobileDetailSheet = ({ task, allTasks, dependencies, flashTaskId, i
                     </button>
                 </div>
 
-                <DetailPane task={task} allTasks={allTasks} dependencies={dependencies} onEscapeToOutline={onEscapeToOutline} />
+                <DetailPane
+                    task={task}
+                    allTasks={allTasks}
+                    dependencies={dependencies}
+                    onEscapeToOutline={onEscapeToOutline}
+                    onCommitTitle={onCommitTitle}
+                    onCommitDescription={onCommitDescription}
+                    onCommitDueDate={onCommitDueDate}
+                />
                 <DagPanel centerTaskId={task?.id ?? null} tasks={allTasks} dependencies={dependencies} flashTaskId={flashTaskId} />
             </section>
         </div>
