@@ -1,6 +1,6 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { type JSX, type KeyboardEvent, useRef } from "react";
+import type { JSX, KeyboardEvent } from "react";
 import { InlineTitleEditor } from "@/features/outline/components/inline-title-editor";
 import type { OutlineTreeRow } from "@/features/outline/lib/build-tree";
 import type { InlineTitleCaret } from "@/features/outline/lib/inline-title-edit";
@@ -21,6 +21,8 @@ export type OutlineRowProps = {
     onCommitInlineTitle: (taskId: string, title: string) => void;
     /** 行内編集の取り消し */
     onCancelInlineTitle: () => void;
+    /** 一覧へフォーカスを戻す共通ヘルパー (`OutlineShell` が持つ、docs/frontend-design.md §6.1)。行内編集の Esc/Enter 終了時に使う */
+    onFocusOutlineList: () => void;
 };
 
 const INDENT_PX = 20;
@@ -58,11 +60,10 @@ export const OutlineRow = ({
     onToggleDone,
     onCommitInlineTitle,
     onCancelInlineTitle,
+    onFocusOutlineList,
 }: OutlineRowProps): JSX.Element => {
     const { task, depth, hasChildren } = row;
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
-    /** 行内編集を終えたときのフォーカス戻し先。tabIndex={-1} を持つのはこの要素 */
-    const optionRef = useRef<HTMLDivElement>(null);
 
     const isDone = task.completed_at !== null;
     const overdue = isOverdue(task);
@@ -88,7 +89,6 @@ export const OutlineRow = ({
             data-cursor={isCursor ? "true" : undefined}
         >
             <div
-                ref={optionRef}
                 role="option"
                 aria-selected={isCursor}
                 tabIndex={-1}
@@ -148,7 +148,7 @@ export const OutlineRow = ({
                         caret={inlineEditCaret}
                         onCommit={(title) => onCommitInlineTitle(task.id, title)}
                         onCancel={onCancelInlineTitle}
-                        focusRow={() => optionRef.current?.focus()}
+                        focusRow={onFocusOutlineList}
                     />
                 ) : (
                     <span className={`min-w-0 flex-1 truncate md:min-w-[10em] md:flex-none ${isDone ? "text-text-dim line-through" : "text-text"}`}>{task.title}</span>

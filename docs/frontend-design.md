@@ -541,7 +541,7 @@ blur 時に空文字だった場合は保存できないため取り消し扱い
 フォーカス制御は次の 2 点を守る（確定事項）。これを誤るとフォーカスが `body` へ落ち、キー入力が一切効かなくなる。
 
 - 編集開始時は callback ref で input へ即座にフォーカスし、`caret` に応じたキャレット位置を `setSelectionRange` で設定する。`useEffect` にしないのは、編集状態が立ってから実際にフォーカスが移るまでの隙間に `j` が滑り込むのを防ぐためである
-- 編集終了時（確定・取り消しの両方）は、編集状態を畳む前に行の要素（`tabIndex={-1}` を持つ `role="option"`）へ明示的にフォーカスを戻す。ただし blur 由来の終了では既に別の要素へフォーカスが移っているため戻さない
+- 編集終了時（確定・取り消しの両方）は、編集状態を畳む前に行の要素（`tabIndex={-1}` を持つ `role="option"`）へ明示的にフォーカスを戻す。ただし blur 由来の終了では既に別の要素へフォーカスが移っているため戻さない。フォーカスを戻す実装自体は `OutlineShell` が持つ共通ヘルパー `focusOutlineList` に委ねる（第 6.5 節）
 
 編集中に別の行がクリックされてカーソルが移動した場合は編集状態を解除する。
 `OutlineShell` がレンダー中の state 調整（`lastCursorTaskId` との比較）で行い、`useEffect` による同期にはしない。
@@ -553,6 +553,26 @@ blur 時に空文字だった場合は保存できないため取り消し扱い
 キー入力は input のローカルハンドラで処理し、行や祖先へは伝播させない（`stopPropagation`）。
 行（`OutlineRow`）の `onKeyDown` が `Enter` / `Space` をカーソル選択として拾い `preventDefault` するため、そのままでは入力欄に空白を打てないためである。
 IME 変換確定の `Enter` / `Esc` は `isComposing` を見て編集の確定・取り消しと取り違えない（`SearchOverlay` と同じ扱い）。
+
+### 6.5 編集領域からの Esc によるフォーカス復帰
+
+`DetailPane`（タイトル・説明・期日・依存先追加候補）と `MobileDetailSheet` 内の同じ編集 UI は、`Esc` keydown でその編集をキャンセルし、一覧へフォーカスを戻す（確定事項）。
+これにより、マウスで一覧外をクリックしなくても `Esc` だけでキーボード操作（NORMAL）へ復帰できる。
+
+キャンセルの意味論は各編集領域の既存のキャンセル手段と揃える。
+タイトル・説明・期日は既存の「キャンセル」ボタンと同じ処理（下書きを元の値へ戻し編集状態を畳む）を呼ぶ。
+依存先追加候補の `select` はボタン押下による確定前提の編集状態を持たないため、未確定の選択（`selectedDependsOnTaskId`）を破棄して未選択へ戻すことをキャンセルとする。
+
+フォーカスを一覧へ戻す実装は、`OutlineShell` が持つ 1 個の共通ヘルパー `focusOutlineList` に集約する（確定事項）。
+`DetailPane` はこれを `onEscapeToOutline` として props で受け取り、各編集領域のローカルな `Esc` ハンドラから呼ぶ。
+`focusOutlineList` はまずカーソル行（`[data-cursor="true"] [role="option"]`。第 6.4 節・`KeymapHelpOverlay` の `resolveRestoreTarget` と同じ探索対象）を探し、見つかればそこへ `focus()` する。
+カーソル未選択などで見つからない場合は、一覧のスクロールコンテナ（`data-role="outline-scroll"`。`tabIndex={-1}` を付けて `focus()` 可能にしてある）へ戻す。
+第 6.4 節の行内タイトル編集（`i` / `A` の `Esc` / `Enter` 終了時）のフォーカス復帰も、`OutlineRow` 内で独自に持っていた実装を廃し、同じ `focusOutlineList` を呼ぶ形に揃えている。
+
+フォーカスが一覧側の要素（`input` / `textarea` / `contenteditable` ではない要素）へ移ると、`isEditableTarget`（第 6.2 節）の抑止が外れ、document の keydown ハンドラが再びキーを受け取る。
+`focusOutlineList` の呼び出しは、この抑止を外すための blur だけでは行われない「フォーカス位置を一覧側へ明示する」ことを目的としており、フォーカス復帰そのものは blur の時点で（抑止が外れる意味では）既に完了している。
+
+IME 変換確定中の `Esc`（`event.nativeEvent.isComposing`）は、いずれの編集領域でも第 6.2 節・第 6.4 節と同じ扱いで無視し、キャンセルとして処理しない。
 
 ---
 
@@ -588,6 +608,17 @@ app/login/page.tsx                    [Server Component]
 
 データ取得と初期描画は Server Component（`page.tsx` 系）に閉じ、以降のインタラクション（キーボード・DnD・楽観更新・SVG 描画）を担う部分はすべて Client Component とする。
 `OutlineShell` を境界コンポーネントとし、これより下は "use client" を再宣言しない（App Router の Client Component 境界の伝播に従う）。
+
+PC 幅の 2 ペインの横幅比（左ペイン：右ペイン）は、既定値を 60%：40% とし、ドラッグで変更できる（確定事項）。
+2 ペインの境界に `role="separator"` 相当（実装は `<hr>`。暗黙に `separator` role を持つ）のドラッグハンドル `PaneDivider` を置き、`pointerdown` + `setPointerCapture` + `pointermove` で左ペインの比率（%）を更新する。
+可動域は 25%〜75% とし、範囲外の入力は `features/outline/lib/pane-ratio.ts` の `clampPaneRatio` で収める。
+比率は CSS 変数（`--left-pane-percent`）経由で `md:flex-[0_0_var(--left-pane-percent)]` へ渡す。
+`md:` 接頭辞の Tailwind responsive utility は `@media` でのみ効くため、この仕組みのままモバイル幅では素の `flex-1`（全幅）を維持し、2 ペイン用のドラッグ操作もモバイル幅には影響しない。
+確定した比率は localStorage（キー `dagdo.pane-ratio`）へ保存し、次回訪問時に復元する。
+SSR とのハイドレーション不整合を避けるため、初期レンダリングは常に既定値 60% とし、復元は mount 後の `useEffect` で行う（第 5.2 節の `useOptimistic` の初期値の扱いと同じ考え方）。
+ドラッグ中は `body` へ `user-select: none` を当ててテキスト選択を防ぎ、ドラッグ終了で必ず外す。
+`PaneDivider` は dnd-kit の `DndContext`（行の並べ替え、`OutlinePane` 内。第 9 章）の外側（`OutlineShell` 直下）に置き、行の dnd 操作とポインタ操作が競合しないようにする。
+ドラッグ中は左ペイン幅の変化に追従して `DependencyRail` の `ResizeObserver` コールバックが発火するが、これは第 7.2 節のトレーリングデバウンス（100ms）にそのまま従う。
 
 ### 7.2 依存レール・DAG の SVG 描画設計
 

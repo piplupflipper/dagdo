@@ -25,6 +25,8 @@ export type OutlinePaneProps = {
     onReparent: (taskId: string, result: ReparentResult) => void;
     onCommitInlineTitle: (taskId: string, title: string) => void;
     onCancelInlineTitle: () => void;
+    /** 一覧へフォーカスを戻す共通ヘルパー (`OutlineShell` が持つ、docs/frontend-design.md §6.1)。行内編集の Esc/Enter 終了時に使う */
+    onFocusOutlineList: () => void;
 };
 
 /**
@@ -61,6 +63,7 @@ export const OutlinePane = ({
     onReparent,
     onCommitInlineTitle,
     onCancelInlineTitle,
+    onFocusOutlineList,
 }: OutlinePaneProps): JSX.Element => {
     const containerRef = useRef<HTMLDivElement>(null);
     const { registerRow, rowMapRef } = useRowRefs();
@@ -95,7 +98,7 @@ export const OutlinePane = ({
     };
 
     return (
-        <div ref={containerRef} className="flex min-h-0 flex-1 overflow-y-auto bg-bg backdrop-blur-sm" data-role="outline-scroll">
+        <div ref={containerRef} tabIndex={-1} className="flex min-h-0 flex-1 overflow-y-auto bg-bg backdrop-blur-sm outline-none" data-role="outline-scroll">
             <DependencyRail containerRef={containerRef} rowMapRef={rowMapRef} visibleTaskIds={visibleTaskIds} dependencies={dependencies} tasksById={tasksById} cursorTaskId={cursorTaskId} />
             <DndContext id={DND_CONTEXT_ID} sensors={sensors} onDragEnd={handleDragEnd}>
                 <SortableContext items={dndItems.map((item) => item.id)} strategy={verticalListSortingStrategy}>
@@ -114,6 +117,7 @@ export const OutlinePane = ({
                                 onToggleDone={onToggleDone}
                                 onCommitInlineTitle={onCommitInlineTitle}
                                 onCancelInlineTitle={onCancelInlineTitle}
+                                onFocusOutlineList={onFocusOutlineList}
                             />
                         ))}
                     </div>

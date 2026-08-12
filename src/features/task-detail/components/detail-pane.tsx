@@ -21,6 +21,14 @@ type DetailPaneProps = {
     task: AppTask | null;
     allTasks: AppTask[];
     dependencies: TaskDependency[];
+    /**
+     * 編集領域 (タイトル・説明・期日・依存先追加) で `Esc` を押した際、一覧へフォーカスを戻す共通ヘルパー
+     *
+     * `OutlineShell` が持つ 1 個の関数を props でそのまま渡す (docs/frontend-design.md §6.1)。
+     * 各編集領域のキャンセル処理自体は本コンポーネントのローカルハンドラが担い、
+     * このヘルパーはキャンセル後のフォーカス移動だけを担当する
+     */
+    onEscapeToOutline: () => void;
     /** OutlineShell が focusEditor を呼ぶための ref (React 19 では ref を通常の prop として受け取れるため forwardRef は使わない) */
     ref?: Ref<DetailPaneHandle>;
 };
@@ -87,8 +95,14 @@ const isOverdue = (dueDate: string): boolean => {
  * 期日は表示 / 編集 (input[type=date]) を切り替え、いずれも編集確定で updateTask を呼んで保存する
  * (失敗時はインラインでエラーを表示する)
  * 依存先は一覧表示・削除 (removeDependency) に加え、候補セレクトからの追加 (addDependency) も行う
+ *
+ * 各編集領域 (タイトル / 説明 / 期日 / 依存先追加候補) は `Esc` keydown でその編集をキャンセルする
+ * (既存のキャンセルボタンと同じ意味論。未確定の変更を破棄し編集状態を畳む)。
+ * キャンセル後は `onEscapeToOutline`（`OutlineShell` の共通ヘルパー）でフォーカスを一覧側へ戻し、
+ * document の keydown ハンドラ（`use-outline-keymap.ts`）の `isEditableTarget` 抑止から抜けて NORMAL の操作へ復帰する
+ * (docs/frontend-design.md §6.1)
  */
-export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProps): JSX.Element => {
+export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, ref }: DetailPaneProps): JSX.Element => {
     // タスク切替時にのみ編集状態をリセットする (レンダー中の state 調整。React 公式の推奨パターンであり
     // useEffect による同期を避けることで useOutlineKeymap 側と同様に「必要な処理だけを行う」構成にする)
     const [lastTaskId, setLastTaskId] = useState<string | null>(task?.id ?? null);
@@ -275,6 +289,7 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
         } else if (event.key === "Escape") {
             event.preventDefault();
             handleCancelTitleEdit();
+            onEscapeToOutline();
         }
     };
 
@@ -307,6 +322,18 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
         setIsEditing(false);
     };
 
+    /** 説明編集中の `Esc`。IME 変換確定と取り違えない (handleTitleKeyDown と同じ扱い) */
+    const handleDescriptionKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+        if (event.nativeEvent.isComposing) {
+            return;
+        }
+        if (event.key === "Escape") {
+            event.preventDefault();
+            handleCancelEdit();
+            onEscapeToOutline();
+        }
+    };
+
     const handleSave = async (): Promise<void> => {
         setIsSaving(true);
         setError(null);
@@ -329,6 +356,36 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
         setDueDateDraft(task.due_date ?? "");
         setDueDateError(null);
         setIsEditingDueDate(false);
+    };
+
+    /** 期日編集中の `Esc`。input[type=date] は IME を伴わないが、他の編集領域と同じ扱いに揃える */
+    const handleDueDateKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+        if (event.nativeEvent.isComposing) {
+            return;
+        }
+        if (event.key === "Escape") {
+            event.preventDefault();
+            handleCancelEditDueDate();
+            onEscapeToOutline();
+        }
+    };
+
+    /**
+     * 依存先追加の候補 `select` 中の `Esc`
+     *
+     * 追加の確定前提の「編集中」state を持たないため、キャンセルの意味論は
+     * 未確定の選択 (`selectedDependsOnTaskId`) を破棄して未選択へ戻すこととする
+     */
+    const handleDependencySelectKeyDown = (event: KeyboardEvent<HTMLSelectElement>): void => {
+        if (event.nativeEvent.isComposing) {
+            return;
+        }
+        if (event.key === "Escape") {
+            event.preventDefault();
+            setSelectedDependsOnTaskId("");
+            setDependencyError(null);
+            onEscapeToOutline();
+        }
     };
 
     /**
@@ -431,6 +488,7 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
                                 onChange={(event) => {
                                     setDueDateDraft(event.target.value);
                                 }}
+                                onKeyDown={handleDueDateKeyDown}
                                 disabled={isSavingDueDate}
                                 aria-label="期日を編集"
                                 className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-text outline-none focus:border-accent disabled:opacity-60"
@@ -504,6 +562,7 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
                         <select
                             value={selectedDependsOnTaskId}
                             onChange={(event) => setSelectedDependsOnTaskId(event.target.value)}
+                            onKeyDown={handleDependencySelectKeyDown}
                             disabled={isAddingDependency}
                             aria-label="追加する依存先タスク"
                             className="min-w-0 flex-1 rounded-base border border-border bg-bg px-2 py-1 text-xs text-text disabled:opacity-60"
@@ -545,7 +604,7 @@ export const DetailPane = ({ task, allTasks, dependencies, ref }: DetailPaneProp
 
                 {isEditing ? (
                     <div className="space-y-2">
-                        <MarkdownEditor ref={attachEditor} value={draft} onChange={setDraft} disabled={isSaving} />
+                        <MarkdownEditor ref={attachEditor} value={draft} onChange={setDraft} disabled={isSaving} onKeyDown={handleDescriptionKeyDown} />
                         {error !== null ? <p className="text-xs text-overdue">{error}</p> : null}
                         <div className="flex justify-end gap-2">
                             <button type="button" onClick={handleCancelEdit} disabled={isSaving} className="rounded-md border border-border px-3 py-1 text-xs text-text-dim disabled:opacity-60">

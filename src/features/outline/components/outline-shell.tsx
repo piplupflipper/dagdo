@@ -1,9 +1,10 @@
 "use client";
 
-import { type JSX, useEffect, useOptimistic, useRef, useState, useTransition } from "react";
+import { type CSSProperties, type JSX, useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import { DagPanel } from "@/features/dag/components/dag-panel";
 import { KeymapHelpOverlay } from "@/features/outline/components/keymap-help-overlay";
 import { OutlinePane } from "@/features/outline/components/outline-pane";
+import { PaneDivider } from "@/features/outline/components/pane-divider";
 import { StatusLine } from "@/features/outline/components/status-line";
 import { useOutlineKeymap } from "@/features/outline/hooks/use-outline-keymap";
 import { buildOutlineTree, collectCollapsibleTaskIds, deriveVisibleRows } from "@/features/outline/lib/build-tree";
@@ -19,6 +20,7 @@ import {
 } from "@/features/outline/lib/flatten-for-dnd";
 import type { InlineTitleCaret, InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
 import { applyOutlineOp, type OutlineOp, resolveReorderedSiblingIds } from "@/features/outline/lib/outline-ops";
+import { DEFAULT_LEFT_PANE_RATIO, PANE_RATIO_STORAGE_KEY, parseStoredPaneRatio } from "@/features/outline/lib/pane-ratio";
 import { EMPTY_UNDO_HISTORY, popRedoEntry, popUndoEntry, pushToRedo, pushToUndo, recordEntry, type UndoHistoryState } from "@/features/outline/lib/undo-history";
 import { SearchOverlay } from "@/features/search/components/search-overlay";
 import { filterTasks } from "@/features/search/lib/filter-tasks";
@@ -158,6 +160,47 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     const [inlineTitleEdit, setInlineTitleEdit] = useState<InlineTitleEdit | null>(null);
     /** `Enter` で DetailPane の編集領域へフォーカスを移すための参照 (docs/frontend-design.md §6.1) */
     const detailPaneRef = useRef<DetailPaneHandle | null>(null);
+
+    /**
+     * PC 2 ペインの左ペイン比率 (%、docs/frontend-design.md §7.1)
+     *
+     * 初期レンダリングは常に `DEFAULT_LEFT_PANE_RATIO` (60) とし、SSR とのハイドレーション不整合を避ける。
+     * localStorage への保存値の復元は mount 後の `useEffect` で行う
+     */
+    const [leftPaneRatio, setLeftPaneRatio] = useState<number>(DEFAULT_LEFT_PANE_RATIO);
+    /** 2 ペインを並べる行コンテナへの参照。PaneDivider がポインタ位置を比率へ変換する基準に使う */
+    const paneRowRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const stored = parseStoredPaneRatio(window.localStorage.getItem(PANE_RATIO_STORAGE_KEY));
+        if (stored !== null) {
+            setLeftPaneRatio(stored);
+        }
+    }, []);
+
+    /** ドラッグ終了時に確定した比率を localStorage へ保存する (次回訪問時に復元、docs/frontend-design.md §7.1) */
+    const handlePaneRatioDragEnd = (ratio: number): void => {
+        window.localStorage.setItem(PANE_RATIO_STORAGE_KEY, String(ratio));
+    };
+
+    /**
+     * 一覧へフォーカスを戻す共通ヘルパー (docs/frontend-design.md §6.1)
+     *
+     * `DetailPane` / `MobileDetailSheet` の編集領域で `Esc` を押した後や、行内タイトル編集の終了後に呼ぶ。
+     * blur だけでも `isEditableTarget`（use-outline-keymap.ts）の抑止からは外れグローバル keymap は復帰するが、
+     * フォーカス位置を一覧側へ明示するためにこちらを使う。
+     * カーソル行 (`[data-cursor="true"] [role="option"]`、outline-row.tsx。KeymapHelpOverlay の
+     * `resolveRestoreTarget` と同じ探索対象) が見つかればそちらへ、カーソル未選択などで
+     * 見つからない場合は一覧のスクロールコンテナ (`data-role="outline-scroll"`、tabIndex={-1}) へ focus する
+     */
+    const focusOutlineList = (): void => {
+        const cursorRow = document.querySelector<HTMLElement>('[data-cursor="true"] [role="option"]');
+        if (cursorRow !== null) {
+            cursorRow.focus();
+            return;
+        }
+        document.querySelector<HTMLElement>('[data-role="outline-scroll"]')?.focus();
+    };
 
     const mode = useOutlineStore((state) => state.mode);
     const cursorTaskId = useOutlineStore((state) => state.cursorTaskId);
@@ -674,9 +717,14 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                 <span className="ml-auto hidden text-[11px] text-text-dim md:inline">j k 移動・x 完了・V 範囲選択・/ 検索・? ヘルプ</span>
             </div>
 
-            {/* PC 幅は 2 ペイン、モバイル幅は左ペイン全幅 + MobileDetailSheet。切り替えは Tailwind のブレークポイントのみで行う */}
-            <div className="flex min-h-0 flex-1" inert={isHelpOpen}>
-                <div className="flex min-w-0 flex-1 flex-col border-border md:flex-[0_0_60%] md:border-r">
+            {/*
+             * PC 幅は 2 ペイン、モバイル幅は左ペイン全幅 + MobileDetailSheet。切り替えは Tailwind のブレークポイントのみで行う。
+             * 左ペインの幅比 (`leftPaneRatio`) は `md:flex-[0_0_var(--left-pane-percent)]` として CSS 変数越しに適用する。
+             * `md:` 接頭辞が付いた Tailwind の responsive utility は @media 経由でのみ効くため、この変数を使っても
+             * モバイル幅では素の `flex-1`（全幅）のままになる (docs/frontend-design.md §7.1)
+             */}
+            <div ref={paneRowRef} className="flex min-h-0 flex-1" inert={isHelpOpen}>
+                <div className="flex min-w-0 flex-1 flex-col border-border md:flex-[0_0_var(--left-pane-percent)] md:border-r" style={{ "--left-pane-percent": `${leftPaneRatio}%` } as CSSProperties}>
                     <OutlinePane
                         visibleRows={visibleRows}
                         tasks={optimisticTasks}
@@ -692,16 +740,27 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                         onReparent={handleReparent}
                         onCommitInlineTitle={commitInlineTitleEdit}
                         onCancelInlineTitle={() => setInlineTitleEdit(null)}
+                        onFocusOutlineList={focusOutlineList}
                     />
                     <StatusLine mode={mode} cursorTask={cursorTask} totalCount={optimisticTasks.length} blockedCount={blockedCount} infoMessage={statusMessage} errorMessage={statusError} />
                 </div>
+                {/* dnd-kit の DndContext (行の並べ替え、OutlinePane 内) の外に置き、行 dnd とポインタ操作を競合させない */}
+                <PaneDivider containerRef={paneRowRef} ratio={leftPaneRatio} onRatioChange={setLeftPaneRatio} onDragEnd={handlePaneRatioDragEnd} />
                 <div className="hidden min-w-0 flex-1 flex-col bg-bg-alt backdrop-blur-sm md:flex">
-                    <DetailPane ref={detailPaneRef} task={cursorTask} allTasks={optimisticTasks} dependencies={dependencies} />
+                    <DetailPane ref={detailPaneRef} task={cursorTask} allTasks={optimisticTasks} dependencies={dependencies} onEscapeToOutline={focusOutlineList} />
                     <DagPanel centerTaskId={cursorTaskId} tasks={optimisticTasks} dependencies={dependencies} flashTaskId={flashTaskId} />
                 </div>
             </div>
 
-            <MobileDetailSheet task={cursorTask} allTasks={optimisticTasks} dependencies={dependencies} flashTaskId={flashTaskId} isInert={isHelpOpen} onClose={() => setCursor(null)} />
+            <MobileDetailSheet
+                task={cursorTask}
+                allTasks={optimisticTasks}
+                dependencies={dependencies}
+                flashTaskId={flashTaskId}
+                isInert={isHelpOpen}
+                onClose={() => setCursor(null)}
+                onEscapeToOutline={focusOutlineList}
+            />
 
             <SearchOverlay />
 

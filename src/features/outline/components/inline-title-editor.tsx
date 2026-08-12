@@ -123,8 +123,12 @@ export const InlineTitleEditor = ({ initialTitle, caret, onCommit, onCancel, foc
         event.stopPropagation();
     };
 
+    // 非編集時の表示 span (outline-row.tsx) は md 以上で `md:flex-none`（内容幅に留める）だが、
+    // 編集中の input は行の使える横幅いっぱいに広げるためここでは付けない。
+    // バッジ (期日チップ等、outline-row.tsx の `ml-auto` 要素) は flex-shrink-0 のままなので、
+    // input が伸びても右端の既存要素を押し出して隠すことはない
     return (
-        <span className="flex min-w-0 flex-1 items-center gap-1.5 md:min-w-[10em] md:flex-none">
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
             <input
                 ref={attachInput}
                 type="text"
@@ -134,7 +138,7 @@ export const InlineTitleEditor = ({ initialTitle, caret, onCommit, onCancel, foc
                 onBlur={handleBlur}
                 onClick={handleClick}
                 aria-label="タイトルを行内編集"
-                className="min-w-0 flex-1 rounded-base border border-accent bg-bg px-1.5 py-0.5 text-[13px] text-text outline-none"
+                className="min-w-0 w-full flex-1 rounded-base border border-accent bg-bg px-1.5 py-0.5 text-[13px] text-text outline-none"
             />
             {error !== null ? (
                 <span role="alert" className="flex-shrink-0 text-[11px] text-overdue">
