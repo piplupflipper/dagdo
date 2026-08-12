@@ -8,6 +8,8 @@ type MobileDetailSheetProps = {
     task: AppTask | null;
     allTasks: AppTask[];
     dependencies: TaskDependency[];
+    /** `OutlineShell` の tempId → 実id 対応表。`DetailPane` へそのまま渡す (バグ修正、detail-pane.tsx 参照) */
+    tempIdRenames: ReadonlyMap<string, string>;
     flashTaskId: string | null;
     /** 前面のオーバーレイ (ヘルプ) が開いている間 true。開いているシートも背面として不活性にする */
     isInert: boolean;
@@ -36,6 +38,7 @@ export const MobileDetailSheet = ({
     task,
     allTasks,
     dependencies,
+    tempIdRenames,
     flashTaskId,
     isInert,
     onClose,
@@ -78,6 +81,7 @@ export const MobileDetailSheet = ({
                     task={task}
                     allTasks={allTasks}
                     dependencies={dependencies}
+                    tempIdRenames={tempIdRenames}
                     onEscapeToOutline={onEscapeToOutline}
                     onCommitTitle={onCommitTitle}
                     onCommitDescription={onCommitDescription}

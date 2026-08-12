@@ -1,6 +1,7 @@
 "use client";
 
 import { type ChangeEvent, type JSX, type KeyboardEvent, type MouseEvent, type Ref, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { isSameLogicalRow } from "@/features/outline/lib/pending-create-registry";
 import { addDependency } from "@/features/task/actions/add-dependency";
 import { removeDependency } from "@/features/task/actions/remove-dependency";
 import type { TaskErrorCode } from "@/features/task/lib/action-result";
@@ -20,6 +21,15 @@ type DetailPaneProps = {
     task: AppTask | null;
     allTasks: AppTask[];
     dependencies: TaskDependency[];
+    /**
+     * `OutlineShell` の `createSibling` が settle 時に記録する、tempId → 実id の対応表 (バグ修正)
+     *
+     * `task` は `OutlineShell` の `cursorTask` (id で解決) をそのまま渡されるため、楽観 create の
+     * tempId が実id へ切り替わった瞬間、`task.id` も tempId → 実id へ変わる。下の `currentTaskId !== lastTaskId`
+     * 判定は本来「別のタスクへ切り替わった」ことを検知する調整だが、この対応表に載っている変化であれば
+     * 「同一論理タスクの id 付け替え」なので、タイトル/説明/期日の編集下書きを破棄しない
+     */
+    tempIdRenames: ReadonlyMap<string, string>;
     /**
      * 編集領域 (タイトル・説明・期日・依存先追加) で `Esc` を押した際、一覧へフォーカスを戻す共通ヘルパー
      *
@@ -129,7 +139,7 @@ const isOverdue = (dueDate: string): boolean => {
  * フォーカスを一覧側へ戻し、document の keydown ハンドラ（`use-outline-keymap.ts`）の `isEditableTarget` 抑止から
  * 抜けて NORMAL の操作へ復帰する (docs/frontend-design.md §6.1)
  */
-export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, onCommitTitle, onCommitDescription, onCommitDueDate, ref }: DetailPaneProps): JSX.Element => {
+export const DetailPane = ({ task, allTasks, dependencies, tempIdRenames, onEscapeToOutline, onCommitTitle, onCommitDescription, onCommitDueDate, ref }: DetailPaneProps): JSX.Element => {
     // タスク切替時にのみ編集状態をリセットする (レンダー中の state 調整。React 公式の推奨パターンであり
     // useEffect による同期を避けることで useOutlineKeymap 側と同様に「必要な処理だけを行う」構成にする)
     const [lastTaskId, setLastTaskId] = useState<string | null>(task?.id ?? null);
@@ -193,16 +203,21 @@ export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, on
 
     const currentTaskId = task?.id ?? null;
     if (currentTaskId !== lastTaskId) {
+        // tempId → 実id への付け替え (バグ修正、tempIdRenames コメント参照) であれば、
+        // 「別のタスクへ切り替わった」わけではないので編集下書きを破棄しない
+        const isSameLogicalTask = isSameLogicalRow(tempIdRenames, lastTaskId, currentTaskId);
         setLastTaskId(currentTaskId);
-        setDraft(task?.description ?? "");
-        setIsEditing(false);
-        setTitleDraft(task?.title ?? "");
-        setIsEditingTitle(false);
-        setTitleError(null);
-        setDueDateDraft(task?.due_date ?? "");
-        setIsEditingDueDate(false);
-        setDependencyError(null);
-        setSelectedDependsOnTaskId("");
+        if (!isSameLogicalTask) {
+            setDraft(task?.description ?? "");
+            setIsEditing(false);
+            setTitleDraft(task?.title ?? "");
+            setIsEditingTitle(false);
+            setTitleError(null);
+            setDueDateDraft(task?.due_date ?? "");
+            setIsEditingDueDate(false);
+            setDependencyError(null);
+            setSelectedDependsOnTaskId("");
+        }
     }
 
     if (task === null) {

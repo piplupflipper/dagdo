@@ -10,10 +10,19 @@
 /** 編集開始時のキャレット位置。`i` は先頭、`A` は末尾 (vim に倣う) */
 export type InlineTitleCaret = "start" | "end";
 
-/** 行内編集中のタスクとキャレット位置。編集していない状態は null で表す */
+/**
+ * 行内編集中のタスクとキャレット位置、下書き文字列。編集していない状態は null で表す
+ *
+ * `draft` は以前 `InlineTitleEditor` 自身の `useState` が持っていたが、`OutlineRow` は
+ * `key={task.id}` で行を再マウントするため、楽観 create の tempId → 実 id の付け替え
+ * (`outline-shell.tsx` の `createSibling` 参照) が起きた瞬間にコンポーネントが破棄され、
+ * 入力中の下書きが失われてしまう (バグ修正、`pending-create-registry.ts` と対になる)。
+ * ここへ状態を引き上げることで、行の再マウントをまたいで下書きが生き残るようにする
+ */
 export type InlineTitleEdit = {
     taskId: string;
     caret: InlineTitleCaret;
+    draft: string;
 };
 
 /** `input.setSelectionRange` へ渡す選択範囲 */

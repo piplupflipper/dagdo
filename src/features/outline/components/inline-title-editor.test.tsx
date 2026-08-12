@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InlineTitleEditor, type InlineTitleEditorProps } from "@/features/outline/components/inline-title-editor";
 
@@ -16,11 +17,21 @@ const createRowElement = (): HTMLDivElement => {
     return row;
 };
 
-const renderEditor = (overrides: Partial<InlineTitleEditorProps> = {}) => {
+/**
+ * `value` は本番では `OutlineShell` の `inlineTitleEdit.draft` が保持する controlled value であるため、
+ * テストも同じ形 (呼び出し元が state を持ち `onDraftChange` で更新する) で包む
+ */
+const ControlledEditor = ({ initialValue, ...props }: Omit<InlineTitleEditorProps, "value" | "onDraftChange"> & { initialValue: string }) => {
+    const [value, setValue] = useState(initialValue);
+    return <InlineTitleEditor {...props} value={value} onDraftChange={setValue} />;
+};
+
+const renderEditor = (overrides: Partial<InlineTitleEditorProps & { initialValue: string }> = {}) => {
     const row = createRowElement();
     const onCommit = vi.fn();
     const onCancel = vi.fn();
-    render(<InlineTitleEditor initialTitle="元のタイトル" caret="start" onCommit={onCommit} onCancel={onCancel} focusRow={() => row.focus()} {...overrides} />);
+    const { initialValue = "元のタイトル", ...rest } = overrides;
+    render(<ControlledEditor initialValue={initialValue} caret="start" onCommit={onCommit} onCancel={onCancel} focusRow={() => row.focus()} {...rest} />);
     const input = screen.getByRole("textbox", { name: "タイトルを行内編集" });
     if (!(input instanceof HTMLInputElement)) {
         throw new Error("inline title editor input not found");

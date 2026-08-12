@@ -14,9 +14,18 @@ export type OutlineRowProps = {
     isFlashing: boolean;
     /** この行を行内編集中ならキャレット位置、編集中でなければ null (docs/frontend-design.md §6.1) */
     inlineEditCaret: InlineTitleCaret | null;
+    /**
+     * この行を行内編集中ならその下書き文字列、編集中でなければ null
+     *
+     * `OutlineShell` の `inlineTitleEdit.draft` を controlled value としてそのまま渡す
+     * (tempId → 実 id の付け替えで行が再マウントされても下書きが失われないようにするための引き上げ、バグ修正)
+     */
+    inlineEditDraft: string | null;
     onSelectCursor: (taskId: string) => void;
     onToggleCollapse: (taskId: string) => void;
     onToggleDone: (task: AppTask) => void;
+    /** 行内編集の下書きの変更 */
+    onInlineTitleDraftChange: (taskId: string, draft: string) => void;
     /** 行内編集の確定。トリム済みで空でないタイトルが渡る */
     onCommitInlineTitle: (taskId: string, title: string) => void;
     /** 行内編集の取り消し */
@@ -55,9 +64,11 @@ export const OutlineRow = ({
     isVisualSelected,
     isFlashing,
     inlineEditCaret,
+    inlineEditDraft,
     onSelectCursor,
     onToggleCollapse,
     onToggleDone,
+    onInlineTitleDraftChange,
     onCommitInlineTitle,
     onCancelInlineTitle,
     onFocusOutlineList,
@@ -142,10 +153,11 @@ export const OutlineRow = ({
                 </button>
 
                 {/* モバイル幅では固定幅だと行が画面幅を超えて横スクロールを生むため、縮小・省略を許す。md 以上は従来どおり縮まない */}
-                {inlineEditCaret !== null ? (
+                {inlineEditCaret !== null && inlineEditDraft !== null ? (
                     <InlineTitleEditor
-                        initialTitle={task.title}
+                        value={inlineEditDraft}
                         caret={inlineEditCaret}
+                        onDraftChange={(draft) => onInlineTitleDraftChange(task.id, draft)}
                         onCommit={(title) => onCommitInlineTitle(task.id, title)}
                         onCancel={onCancelInlineTitle}
                         focusRow={onFocusOutlineList}

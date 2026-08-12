@@ -5,10 +5,19 @@ import { type InlineTitleCaret, resolveCaretRange } from "@/features/outline/lib
 const EMPTY_TITLE_MESSAGE = "タイトルは空にできません";
 
 export type InlineTitleEditorProps = {
-    /** 編集開始時のタイトル */
-    initialTitle: string;
+    /**
+     * 現在の下書き文字列 (呼び出し元が保持する controlled value)
+     *
+     * 以前はこのコンポーネント自身の `useState` で持っていたが、`OutlineRow` が `key={task.id}` で
+     * 行を再マウントするため、楽観 create の tempId → 実 id の付け替え時に下書きが失われるバグがあった
+     * (バグ修正)。呼び出し元 (`OutlineShell` の `inlineTitleEdit.draft`) へ引き上げ、
+     * 再マウントをまたいで生き残るようにしてある
+     */
+    value: string;
     /** 編集開始時のキャレット位置 */
     caret: InlineTitleCaret;
+    /** 下書きの変更。呼び出し元が `value` を更新する */
+    onDraftChange: (value: string) => void;
     /** `Enter` / `Esc` / blur による確定。トリム済みで空でないタイトルが渡る */
     onCommit: (title: string) => void;
     /**
@@ -31,15 +40,15 @@ export type InlineTitleEditorProps = {
 /**
  * アウトライン 1 行のタイトルを行内編集する input (docs/frontend-design.md §6.1, §6.4)
  *
- * 編集中かどうかを持つのは `OutlineShell` のローカル state だけで、このコンポーネントは
- * 下書き文字列と空文字エラーのみを持つ。確定は `Enter` / `Esc` / blur のいずれでも行う (改修 2。
- * 以前は `Esc` が取り消しだったが、確定に変更した)。
+ * 編集中かどうかと下書き文字列 (`value`) は `OutlineShell` の `inlineTitleEdit` state が持つ
+ * (バグ修正で `value` を controlled にした。理由は `InlineTitleEditorProps.value` のコメント参照)。
+ * このコンポーネント自身が持つローカル state は空文字エラーのみである。確定は `Enter` / `Esc` / blur の
+ * いずれでも行う (改修 2。以前は `Esc` が取り消しだったが、確定に変更した)。
  * `Esc` によって明示的な破棄の導線は無くなるが、確定後は `u` (undo) で直前のタイトルへ戻せるため
  * 実害はない (docs/frontend-design.md §5.2 の undo 履歴、Op は `updateTitle`)。
  * `Enter` での確定は NORMAL に戻すだけで DetailPane へは連鎖させない (改めて `Enter` を押す仕様)
  */
-export const InlineTitleEditor = ({ initialTitle, caret, onCommit, onCancel, focusRow }: InlineTitleEditorProps): JSX.Element => {
-    const [draft, setDraft] = useState(initialTitle);
+export const InlineTitleEditor = ({ value, caret, onDraftChange, onCommit, onCancel, focusRow }: InlineTitleEditorProps): JSX.Element => {
     const [error, setError] = useState<string | null>(null);
     /** 確定・取り消し済みかどうか。focusRow が起こす blur を確定として二重に処理しないためのガード */
     const isFinishedRef = useRef(false);
@@ -81,7 +90,7 @@ export const InlineTitleEditor = ({ initialTitle, caret, onCommit, onCancel, foc
      * mapDbErrorOrThrow が re-throw するため、送信前にここで弾いて編集を継続する (detail-pane.tsx と同じ理由)
      */
     const commit = (shouldFocusRow: boolean): void => {
-        const trimmedTitle = draft.trim();
+        const trimmedTitle = value.trim();
         if (trimmedTitle === "") {
             setError(EMPTY_TITLE_MESSAGE);
             return;
@@ -94,7 +103,7 @@ export const InlineTitleEditor = ({ initialTitle, caret, onCommit, onCancel, foc
     };
 
     const handleChange = (event: ChangeEvent<HTMLInputElement>): void => {
-        setDraft(event.target.value);
+        onDraftChange(event.target.value);
         setError(null);
     };
 
@@ -116,7 +125,7 @@ export const InlineTitleEditor = ({ initialTitle, caret, onCommit, onCancel, foc
 
     /** blur は確定として扱う。ただし空文字のままでは保存できないため取り消しにして元のタイトルへ戻す */
     const handleBlur = (): void => {
-        if (draft.trim() === "") {
+        if (value.trim() === "") {
             cancel(false);
             return;
         }
@@ -137,7 +146,7 @@ export const InlineTitleEditor = ({ initialTitle, caret, onCommit, onCancel, foc
             <input
                 ref={attachInput}
                 type="text"
-                value={draft}
+                value={value}
                 onChange={handleChange}
                 onKeyDown={handleKeyDown}
                 onBlur={handleBlur}

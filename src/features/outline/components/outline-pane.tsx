@@ -23,6 +23,8 @@ export type OutlinePaneProps = {
     onToggleDone: (task: AppTask) => void;
     onReorder: (taskId: string, result: SiblingReorderResult) => void;
     onReparent: (taskId: string, result: ReparentResult) => void;
+    /** 行内編集の下書きの変更 (`inline-title-editor.tsx` の controlled value、バグ修正) */
+    onInlineTitleDraftChange: (taskId: string, draft: string) => void;
     onCommitInlineTitle: (taskId: string, title: string) => void;
     onCancelInlineTitle: () => void;
     /** 一覧へフォーカスを戻す共通ヘルパー (`OutlineShell` が持つ、docs/frontend-design.md §6.1)。行内編集の Esc/Enter 終了時に使う */
@@ -61,6 +63,7 @@ export const OutlinePane = ({
     onToggleDone,
     onReorder,
     onReparent,
+    onInlineTitleDraftChange,
     onCommitInlineTitle,
     onCancelInlineTitle,
     onFocusOutlineList,
@@ -112,9 +115,11 @@ export const OutlinePane = ({
                                 isVisualSelected={visualSelectedTaskIds.has(row.task.id)}
                                 isFlashing={row.task.id === flashTaskId}
                                 inlineEditCaret={inlineTitleEdit?.taskId === row.task.id ? inlineTitleEdit.caret : null}
+                                inlineEditDraft={inlineTitleEdit?.taskId === row.task.id ? inlineTitleEdit.draft : null}
                                 onSelectCursor={onSelectCursor}
                                 onToggleCollapse={onToggleCollapse}
                                 onToggleDone={onToggleDone}
+                                onInlineTitleDraftChange={onInlineTitleDraftChange}
                                 onCommitInlineTitle={onCommitInlineTitle}
                                 onCancelInlineTitle={onCancelInlineTitle}
                                 onFocusOutlineList={onFocusOutlineList}

@@ -21,6 +21,15 @@ import {
 import type { InlineTitleCaret, InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
 import { applyOutlineOp, type OutlineOp, resolveReorderedSiblingIds } from "@/features/outline/lib/outline-ops";
 import { DEFAULT_LEFT_PANE_RATIO, PANE_RATIO_STORAGE_KEY, parseStoredPaneRatio } from "@/features/outline/lib/pane-ratio";
+import {
+    createPendingCreateRegistry,
+    isSameLogicalRow,
+    pruneConfirmedRenames,
+    queuePendingTitle,
+    recordRename,
+    resolveRenamedLookup,
+    takePendingTitle,
+} from "@/features/outline/lib/pending-create-registry";
 import { EMPTY_UNDO_HISTORY, popRedoEntry, popUndoEntry, pushToRedo, pushToUndo, recordEntry, type UndoHistoryState } from "@/features/outline/lib/undo-history";
 import { SearchOverlay } from "@/features/search/components/search-overlay";
 import { filterTasks } from "@/features/search/lib/filter-tasks";
@@ -148,6 +157,15 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     const pendingTempIdsRef = useRef<Set<string>>(new Set());
     const isPendingTaskId = (taskId: string | null): boolean => taskId !== null && pendingTempIdsRef.current.has(taskId);
     /**
+     * tempId → 実 id の対応表と、settle 前に確定されたタイトルの保留キュー (バグ修正、pending-create-registry.ts 参照)
+     *
+     * 楽観 create の tempId が実 id へ切り替わる瞬間、下記のレンダー時調整 (カーソル移動検知・表示行消失検知) や
+     * `DetailPane` の同種の調整 (`lastTaskId`) が「別の行への移動」「行の削除」と誤認して行内編集を畳んでしまう
+     * 問題 (診断 1, 2) と、settle 前の確定入力を `isPendingTaskId` のガードが黙って捨ててしまう問題 (診断 3) を、
+     * ここに集約したロジックで解く
+     */
+    const pendingCreateRef = useRef(createPendingCreateRegistry());
+    /**
      * `?` のヘルプオーバーレイの開閉状態 (Issue #16)
      *
      * モードは NORMAL / VISUAL / SEARCH の 3 値に保つ制約があるため `OutlineMode` には足さず、
@@ -220,16 +238,23 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     const exitVisual = useOutlineStore((state) => state.exitVisual);
 
     // カーソルが別の行へ移ったら行内編集を畳む (行のクリックなど、input の外で起きた移動を拾う)。
-    // useEffect による同期ではなくレンダー中の state 調整で行う (detail-pane.tsx の lastTaskId と同じパターン)
+    // useEffect による同期ではなくレンダー中の state 調整で行う (detail-pane.tsx の lastTaskId と同じパターン)。
+    // ただし、この変化が createSibling の settle による tempId → 実id の付け替え (同一論理行) であれば、
+    // 「別の行へ移った」わけではないので畳まない (バグ修正、診断 1)
     const [lastCursorTaskId, setLastCursorTaskId] = useState<string | null>(cursorTaskId);
     if (cursorTaskId !== lastCursorTaskId) {
+        const isSameRowRename = isSameLogicalRow(pendingCreateRef.current.renamedIds, lastCursorTaskId, cursorTaskId);
         setLastCursorTaskId(cursorTaskId);
-        if (inlineTitleEdit !== null) {
+        if (inlineTitleEdit !== null && !isSameRowRename) {
             setInlineTitleEdit(null);
         }
     }
 
     const tasksById = new Map(optimisticTasks.map((task) => [task.id, task]));
+    // 実 id の行が optimisticTasks に現れたのを確認できた tempId 対応は、対応表から剪定する。
+    // 放置すると対応表が増え続けるうえ、はるか後になって同じ実id の行が (再編集中に) 正当に削除された場合でも
+    // 下の isAwaitingRenamedRow が「まだ revalidate 待ち」と誤認し続けてしまう (pending-create-registry.ts 参照)
+    pruneConfirmedRenames(pendingCreateRef.current, (realId) => tasksById.has(realId));
     const rows = buildOutlineTree(optimisticTasks);
     const trimmedQuery = searchQuery.trim();
     const visibleRows =
@@ -245,8 +270,12 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     // 上のカーソル移動による解除と同じくレンダー中の state 調整で行う。
     // キー経由でここに来ることはない (編集中はフォーカスが input にあり dispatcher が isEditableTarget で素通しする) が、
     // 行の折りたたみボタンのクリックのようにキーボード以外の経路で表示行が変わったとき、
-    // input が unmount されたまま inlineTitleEdit だけが残るのを防ぐ
-    if (inlineTitleEdit !== null && !visibleTaskIdList.includes(inlineTitleEdit.taskId)) {
+    // input が unmount されたまま inlineTitleEdit だけが残るのを防ぐ。
+    // ただし、createSibling の settle で tempId → 実id へ付け替えた直後、revalidate 到着前の一瞬だけ
+    // 実id の行がまだ optimisticTasks に存在しない (診断 2) 場合があるため、その付け替え先の id である間は
+    // 「消えた」と誤認せず待つ (revalidate 到着後、行が現れれば通常判定に戻る)
+    const isAwaitingRenamedRow = inlineTitleEdit !== null && !tasksById.has(inlineTitleEdit.taskId) && Array.from(pendingCreateRef.current.renamedIds.values()).includes(inlineTitleEdit.taskId);
+    if (inlineTitleEdit !== null && !visibleTaskIdList.includes(inlineTitleEdit.taskId) && !isAwaitingRenamedRow) {
         setInlineTitleEdit(null);
     }
 
@@ -254,7 +283,10 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         setVisibleTaskIds(visibleTaskIdList);
     }, [visibleTaskIdList, setVisibleTaskIds]);
 
-    const cursorTask = cursorTaskId !== null ? (tasksById.get(cursorTaskId) ?? null) : null;
+    // cursorTaskId が実 id へ付け替えられた直後、revalidate 到着前の一瞬だけ optimisticTasks が
+    // まだ tempId の行しか持たない場合がある (診断 2)。その間は tempId の行の内容を実id 名義で拾い、
+    // cursorTask (DetailPane / MobileDetailSheet へそのまま渡る) が一瞬 null にならないようにする
+    const cursorTask = cursorTaskId !== null ? (resolveRenamedLookup(tasksById, pendingCreateRef.current.renamedIds, cursorTaskId, (task, id) => ({ ...task, id })) ?? null) : null;
     const blockedCount = optimisticTasks.filter((task) => task.is_blocked).length;
 
     /** Server Action が成功で確定した操作を undo 履歴へ積む */
@@ -353,7 +385,15 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
      * position はカーソル行の兄弟グループ内での並び順から決める。カーソル未選択のときは
      * ルート直下の兄弟グループ末尾へ作る (computeCreatePosition が null を返す)。
      * tempId は crypto.randomUUID() で採番し、楽観行を即表示してカーソルも合わせる。
-     * Server Action 成功後、実 id へ setCursor し直す
+     * Server Action 成功後、実 id へ setCursor し直す。
+     *
+     * settle 時は tempId → 実id の付け替えを「同一論理行」として扱う (バグ修正、pending-create-registry.ts)。
+     * `recordRename` で対応表へ記録したうえで、カーソルと (編集中であれば) `inlineTitleEdit.taskId` の両方を
+     * 実id へ揃える。カーソルの付け替え自体は上のレンダー時調整が対応表を見て「畳まない」と判定するため、
+     * ここで `setInlineTitleEdit` を呼んでも編集中の下書き (`draft`) は保たれる (`InlineTitleEditor` は
+     * controlled value になっており、行の再マウントをまたいで `OutlineShell` 側の state に生き続ける)。
+     * settle 前に Enter/Esc で確定されたタイトルがあれば (`commitInlineTitleEdit` が保留したもの)、
+     * ここで実id の通常パイプラインへ流す。create 自体が失敗した場合は保留分を破棄し、既存のエラー表示に合流する
      */
     const createSibling = (placement: SiblingPlacement): void => {
         const parentId = cursorTask?.parent_id ?? null;
@@ -372,14 +412,31 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
             const result = await createTask({ title, parentId, position });
             pendingTempIdsRef.current.delete(tempId);
             if (!result.ok) {
+                // 保留中のタイトル確定 (診断 3) があれば、create 自体の失敗に合わせて破棄する
+                takePendingTitle(pendingCreateRef.current, tempId);
                 setStatusError(formatActionError(result));
                 return;
             }
-            setCursor(result.data.id);
+            const realId = result.data.id;
+            recordRename(pendingCreateRef.current, tempId, realId);
+            setCursor(realId);
+            setInlineTitleEdit((current) => (current !== null && current.taskId === tempId ? { ...current, taskId: realId } : current));
             setStatusError(null);
             if (projectedRow !== undefined) {
-                const snapshot: AppTask = { ...projectedRow, id: result.data.id };
-                pushHistory("新規タスク", [{ type: "softDelete", taskId: result.data.id }], [{ type: "restore", taskId: result.data.id, snapshot }]);
+                const snapshot: AppTask = { ...projectedRow, id: realId };
+                pushHistory("新規タスク", [{ type: "softDelete", taskId: realId }], [{ type: "restore", taskId: realId, snapshot }]);
+            }
+            // settle 前に Enter/Esc で確定されていたタイトル (診断 3) を、実id の通常パイプライン
+            // (楽観適用 + updateTask + undo 履歴) へ流す。create の title (= "新規タスク") のままなら何もしない
+            const pendingTitle = takePendingTitle(pendingCreateRef.current, tempId);
+            if (pendingTitle !== undefined && pendingTitle !== title) {
+                applyOptimisticAction({ type: "updateTitle", taskId: realId, title: pendingTitle });
+                const titleResult = await updateTask({ taskId: realId, title: pendingTitle });
+                if (!titleResult.ok) {
+                    setStatusError(formatActionError(titleResult));
+                    return;
+                }
+                pushHistory("タイトル変更", [{ type: "updateTitle", taskId: realId, title }], [{ type: "updateTitle", taskId: realId, title: pendingTitle }]);
             }
         });
     };
@@ -389,7 +446,12 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         if (cursorTask === null) {
             return;
         }
-        setInlineTitleEdit({ taskId: cursorTask.id, caret });
+        setInlineTitleEdit({ taskId: cursorTask.id, caret, draft: cursorTask.title });
+    };
+
+    /** 行内タイトル編集中の下書きの変更。`InlineTitleEditor` を controlled にするための onChange (バグ修正、診断 1/2 対策) */
+    const updateInlineTitleDraft = (taskId: string, draft: string): void => {
+        setInlineTitleEdit((current) => (current !== null && current.taskId === taskId ? { ...current, draft } : current));
     };
 
     /**
@@ -398,11 +460,16 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
      * 行内タイトル編集 (`i`/`A`) と DetailPane のタイトル編集の両方から呼ぶ共通ハンドラである
      * (どちらも同じ `updateTitle` Op を経由する単一の保存経路、docs/frontend-design.md §5.2)。
      * DetailPane 側には行内編集の state (`inlineTitleEdit`) が無いため、`setInlineTitleEdit(null)` は
-     * その経路では実質 no-op (既に null) になるだけで害はない
+     * その経路では実質 no-op (既に null) になるだけで害はない。
+     *
+     * `taskId` が tempId (createTask の settle 待ち) の場合、以前はここで黙って入力を捨てていた (診断 3)。
+     * 今は settle 後に実id で通常パイプラインへ流すため、保留キューへ置くだけにする
+     * (`createSibling` の settle 処理が `takePendingTitle` で取り出す)
      */
     const commitInlineTitleEdit = (taskId: string, title: string): void => {
         setInlineTitleEdit(null);
         if (isPendingTaskId(taskId)) {
+            queuePendingTitle(pendingCreateRef.current, taskId, title);
             return;
         }
         const task = tasksById.get(taskId);
@@ -799,6 +866,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                         onToggleDone={handleToggleDone}
                         onReorder={handleReorder}
                         onReparent={handleReparent}
+                        onInlineTitleDraftChange={updateInlineTitleDraft}
                         onCommitInlineTitle={commitInlineTitleEdit}
                         onCancelInlineTitle={() => setInlineTitleEdit(null)}
                         onFocusOutlineList={focusOutlineList}
@@ -813,6 +881,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                         task={cursorTask}
                         allTasks={optimisticTasks}
                         dependencies={dependencies}
+                        tempIdRenames={pendingCreateRef.current.renamedIds}
                         onEscapeToOutline={focusOutlineList}
                         onCommitTitle={commitInlineTitleEdit}
                         onCommitDescription={commitDescriptionEdit}
@@ -828,6 +897,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                 dependencies={dependencies}
                 flashTaskId={flashTaskId}
                 isInert={isHelpOpen}
+                tempIdRenames={pendingCreateRef.current.renamedIds}
                 onClose={() => setCursor(null)}
                 onEscapeToOutline={focusOutlineList}
                 onCommitTitle={commitInlineTitleEdit}
