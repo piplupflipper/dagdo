@@ -52,8 +52,13 @@ type KeymapHelpSection = {
  */
 export const HELP_CLOSE_KEYS: readonly string[] = ["q", "Escape"];
 
-/** `event.key` 由来の長い名前を `kbd` に収まる表記へ読み替える */
-const TOKEN_LABELS: Readonly<Record<string, string | undefined>> = { Escape: "Esc" };
+/**
+ * `kbd` の表示ラベルへの読み替え表
+ *
+ * `event.key` 由来の長い名前 (`Escape`) を短く収めるほか、特定のキーに割り当てられていない打鍵を表す
+ * プレースホルダのトークン (SEARCH の `{char}`) を読み下せる表記へ変える
+ */
+const TOKEN_LABELS: Readonly<Record<string, string | undefined>> = { Escape: "Esc", "{char}": "文字" };
 
 /** キートークンを `kbd` の表示ラベルへ変換する */
 export const formatKeyToken = (token: string): string => TOKEN_LABELS[token] ?? token;

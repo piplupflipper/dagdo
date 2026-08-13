@@ -131,6 +131,14 @@ describe("keymap テーブルと dispatcher の整合性", () => {
         }
     });
 
+    // Issue #47 で足したドキュメント専用エントリが trie に載っていないことを打鍵で確かめる
+    it("ドキュメント専用エントリのキーは dispatcher が解決しない", () => {
+        expect(createPresser("SEARCH")("Enter").type).toBe("unmatched");
+        expect(createPresser("SEARCH")("{char}").type).toBe("unmatched");
+        // 行内編集の Enter / Esc と同じ扱いだが、NORMAL の Enter は詳細ペインへ移る側が run を持つため match する
+        expect(createPresser("NORMAL")("Enter").type).toBe("match");
+    });
+
     it("テーブルに無いキーはどのモードでも処理されない", () => {
         const modes: readonly OutlineMode[] = ["NORMAL", "VISUAL", "SEARCH"];
         const registered = new Set(dispatchableKeymap.map((target) => `${target.mode} ${parseKeySequence(target.keys)[0]}`));
