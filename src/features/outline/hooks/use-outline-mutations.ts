@@ -379,13 +379,16 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
      * `dd`。逆操作は削除直前の行のスナップショットを丸ごと持たせた `restore` に加え、`move` を続ける
      * (outline-ops.ts の OutlineOp 参照)
      *
-     * `restore_task` RPC (migration 0005) は actual sibling group の末尾へ position を移す仕様であり、
+     * `restore_task` RPC (migration 0005) は actual sibling group の末尾へ position を移す仕様であり (req.md §26)、
      * 削除前の元の位置には戻さない (restore-task.ts のドキュメントコメント参照)。
      * undo で「元の位置に戻った」ように見せるには、restore に続けて元の parent_id/position への `move` が要る。
      * `move` の楽観適用は oldParentId/oldPosition === newParentId/newPosition (どちらも snapshot の値) の
      * ときに no-op になる (applyOutlineOp の隙間詰め/隙間空けが互いに打ち消す) ため、
      * ローカル表示は restore 直後の snapshot 位置のまま変わらず、末尾へ飛んで見えることはない。
-     * サーバー側だけ tail → 元の位置へ move_task RPC で正しく収束する
+     * サーバー側だけ tail → 元の位置へ move_task RPC で正しく収束する。
+     * restore_task は復元対象が空けた穴も詰めるため (migration 20260813000001、Issue #23)、
+     * 続く move_task の後の兄弟の position は楽観適用側と一致する
+     * (supabase/tests/011_position_gaps.test.sql のケース8 と outline-ops.test.ts が両側を固定する)
      * (この 2 Op 列の組み立ては lib/invert-op.ts の `softDelete` 分岐が持つ)
      */
     const softDeleteCursor = (): void => {

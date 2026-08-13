@@ -44,7 +44,8 @@ export const invertOutlineOp = (op: OutlineOp, tasksSnapshot: readonly AppTask[]
             return [{ type: "reorder", taskId: op.taskId, newPosition: siblingRankOf(tasksSnapshot, op.taskId) }];
 
         case "softDelete":
-            // `restore_task` RPC (migration 0005) は actual sibling group の末尾へ position を移すため、
+            // `restore_task` RPC (migration 0005、詰め処理の追加は 20260813000001) は
+            // actual sibling group の末尾へ position を移すため (req.md §26)、
             // 元の位置に戻すには `restore` に続けて削除前の parent_id/position への `move` が要る
             // (outline-shell.tsx の `softDeleteCursor` のコメント参照)
             return previous === null
