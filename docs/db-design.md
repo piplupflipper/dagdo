@@ -1,7 +1,7 @@
 # dagdo DB設計書
 
 対象リポジトリ: dagdo
-対象コミット: 2591b2f
+対象コミット: 2752573
 作成日: 2026-08-08
 更新日: 2026-08-13
 生成者: Claude Code
@@ -657,6 +657,8 @@ V1ではFractional IndexingやLexoRankは使用しない(req.md §16)。
 
 `position`は同一actual sibling group内で、論理削除済みの行も含めて0から連番で連続する。
 この不変条件を保つ採番規則は12.2節（`move_task`）、12.3節（`reorder_tasks`）、12.4節（`restore_task`）、12.5節（`permanently_delete_task`）が定める。
+`move_task`の`p_new_position`にNULLを渡す末尾指定もこの不変条件を保つ側にある。
+末尾は旧sibling groupの隙間を詰めた後の`max(position) + 1`であり、隙間空けのシフトを起こさずに連番の直後へ1つ足す（12.2節）。
 
 Todoアプリの規模（数百から数千件程度、15章参照）を考慮し、この方式で十分と判断されている(req.md §16, §68)。
 
@@ -669,6 +671,14 @@ Todoアプリの規模（数百から数千件程度、15章参照）を考慮�
 **reparent**：別の親へ移動する操作である。`parent_id`を変更し、`position`は新しいsibling group内の値へ変更する(req.md §18)。
 
 この分離は、RPCとして`move_task`（reparentを含む移動）と`reorder_tasks`（reorderのみ）の2つを別に用意する設計にそのまま反映されている(req.md §54, §55)。
+
+2つのRPCは位置の指定方法が異なる。
+`move_task`の`p_new_position`は、論理削除済みの行も含めた新しいsibling group内の実positionである（12.2節）。
+`reorder_tasks`の`p_ordered_task_ids`はIDの並びだけを渡すものであり、position値そのものは渡さない。
+割り当てられるpositionは、可視の兄弟が現在占めているpositionの集合（slot）をそのまま使い回して決まる（12.3節）。
+
+この違いを取り違えて`move_task`へ可視の兄弟の中での添字を渡すと、同一sibling groupに論理削除済みの行が残っている場合に、対象が意図した位置より手前へ入る。
+クライアントが可視の兄弟しか列挙できないのは`app_tasks` Viewが論理削除済みを除外するためであり（9章）、可視の添字と実positionは論理削除済みの行を挟むとずれる。
 
 ### 8.4 sort_path
 
@@ -940,6 +950,18 @@ cycle検出ロジックをRPCとTriggerで重複させず、不変条件はTrigg
 
 1トランザクション内で、旧sibling groupのposition整理、`parent_id`変更、新sibling groupのposition整理を行う(req.md §54)。
 
+`p_new_position`は、論理削除済みの行も含めた新しいactual sibling group内の実positionを指す。
+その位置以降の兄弟を+1シフトしたうえで、対象をその位置へ置く。
+
+`p_new_position`にNULLを渡した場合は、新しいactual sibling group（論理削除済みの行も含む）の末尾を指す(`supabase/migrations/20260813000002_move_task_append_to_tail.sql`)。
+末尾は対象自身を除いた`coalesce(max(position) + 1, 0)`で求める。これは12.4節（`restore_task`）が末尾を求める式と同じである。
+末尾をRPC側で求めるのは、`app_tasks` Viewが論理削除済みを除外するため、クライアントが移動先のsibling groupの実際の末尾を知れないためである（9章、8.3節）。
+負の`p_new_position`は`INVALID_POSITION`（SQLSTATE `ET006`）で拒否するが、NULLはこの検査の対象外である。
+
+末尾の解決は、旧sibling groupの隙間詰めより後に行う。
+移動先が移動元と同じsibling groupの場合、詰める前に末尾を求めると対象自身が抜ける分だけ末尾が1つ大きくなり、8.2節の連番の不変条件を破ってpositionに穴が空く。
+A(0) / B(1) / C(2) でAをNULL（末尾）へ移す場合、まずB → 0 / C → 1と詰め、続いてAを詰めた後の末尾（`max(1) + 1 = 2`）へ移すため、結果はB(0) / C(1) / A(2)となる。
+
 親子cycleについてはTrigger（11.1節）が最終保証する(req.md §54)。
 
 ### 12.3 reorder_tasks
@@ -973,7 +995,7 @@ cycle検出ロジックをRPCとTriggerで重複させず、不変条件はTrigg
 actual parentは変更せず、actual sibling groupの末尾へpositionを移動する(req.md §56)。
 
 末尾へ移す前に、復元対象が元々占めていた`position`より後ろの兄弟を1つ詰める(`supabase/migrations/20260813000001_close_position_gaps_on_restore_and_delete.sql`)。
-これにより8.1節の連番の不変条件が復元後も保たれ、req.md §56の末尾移動もそのまま成り立つ。
+これにより8.2節の連番の不変条件が復元後も保たれ、req.md §56の末尾移動もそのまま成り立つ。
 A(0) / B(1、論理削除済み) / C(2) でBを復元する場合、まずC → 1と詰め、続いてBを末尾へ移すため、結果はA(0) / C(1) / B(2)となる。
 
 親子関係や依存関係など、論理削除中に保持していた構造をそのまま再利用する(req.md §56)。
@@ -982,7 +1004,7 @@ A(0) / B(1、論理削除済み) / C(2) でBを復元する場合、まずC → 
 
 完全削除時は1トランザクションで、子タスクの`parent_id`のNULL化、子タスクのpositionのルート側での調整、関連dependency edgeの削除、対象タスクのDELETEを行い、中途半端な状態を残さない(req.md §57)。
 
-これに加えて、対象が占めていた`position`より後ろの兄弟を1つ詰め、8.1節の連番の不変条件を保つ(`supabase/migrations/20260813000001_close_position_gaps_on_restore_and_delete.sql`)。
+これに加えて、対象が占めていた`position`より後ろの兄弟を1つ詰め、8.2節の連番の不変条件を保つ(`supabase/migrations/20260813000001_close_position_gaps_on_restore_and_delete.sql`)。
 
 詰める処理は子のreparentより前に置く必要がある。
 子を移すルート末尾を対象自身を除いた`max(position) + 1`で求めるため、詰めを後に置くと子の`position`が二重に詰まる。
@@ -1269,7 +1291,7 @@ req.mdは7つの設計原則を挙げている(req.md §75)。
 ---
 
 対象リポジトリ: dagdo
-対象コミット: 2591b2f
+対象コミット: 2752573
 作成日: 2026-08-08
 更新日: 2026-08-13
 生成者: Claude Code

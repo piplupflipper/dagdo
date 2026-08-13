@@ -1,7 +1,7 @@
 # dagdo フロントエンド技術設計書
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 2591b2f
+- 対象コミット: 2752573
 - 作成日: 2026-08-08
 - 更新日: 2026-08-13
 - 生成者: Claude Code
@@ -436,7 +436,7 @@ type OutlineOp =
     | { type: "updateTitle"; taskId: string; title: string }
     | { type: "updateDescription"; taskId: string; description: string }
     | { type: "updateDueDate"; taskId: string; dueDate: string | null }
-    | { type: "move"; taskId: string; newParentId: string | null; newPosition: number } // indent/outdent/dnd reparent
+    | { type: "move"; taskId: string; newParentId: string | null; newPosition: number | null } // indent/outdent/dnd reparent
     | { type: "reorder"; taskId: string; newPosition: number } // 同一 actual parent 内の rank
     | { type: "softDelete"; taskId: string }
     | { type: "restore"; taskId: string; snapshot: AppTask };
@@ -454,6 +454,19 @@ const [optimisticTasks, applyOptimisticAction] = useOptimistic(initialTasks, (st
 
 `applyOutlineOp(tasks, dependencies, op, options)` は 1 Op を適用したうえで、`app_tasks` View（`supabase/migrations/20260808000003_app_tasks_view.sql`）と同じ意味論で `sort_path` / `effective_parent_id` / `is_blocked` を全行再計算する（normalize）純関数である。
 `move` / `reorder` の position 採番規則は `move_task` / `reorder_tasks` RPC（`supabase/migrations/20260808000005_rpc_functions.sql`、`20260808000007_reorder_tasks_exclude_deleted_siblings.sql`）の挙動にそのまま合わせる。
+
+`move` の `newPosition` は `move_task` の `p_new_position` と同じ意味であり、論理削除済みの行も含めた新しい actual parent 内の実 position である（`docs/db-design.md` 第12.2節）。
+`null` は「新しい兄弟グループの末尾へ追加する」を表す（`supabase/migrations/20260813000002_move_task_append_to_tail.sql`）。
+末尾だけをクライアントから実 position で表せないのは、`app_tasks` View が論理削除済みを除外するためである。
+`applyMove`（`outline-ops.ts`）は RPC と同じ順序で処理を 2 段に分ける。
+旧兄弟グループの隙間を詰め、次に末尾を解決し、最後に新兄弟グループの隙間を空ける。
+移動先が移動元と同じ兄弟グループのとき、詰める前に末尾を求めると対象自身の分だけ 1 つ大きくなるためである。
+
+末尾指定では楽観適用とサーバーで position の数値がずれる場合がある。
+手元の `tasks` には論理削除済みの行が無いため（`softDelete` で配列から除いている）、`applyMove` が求める末尾は、移動先の兄弟グループの末尾に論理削除済みの行が並んでいる場合だけサーバーの採番より小さくなる。
+末尾は `max(position) + 1` で求めるため、論理削除済みの行が末尾以外にいる場合は数値まで一致する。
+ずれても可視の兄弟すべてより大きい値になるため表示順は一致し、revalidate 後にサーバーの値へ収束する。
+`applyCreate` が `position` 省略時の末尾を手元の兄弟の件数から求める点も同じ妥協である（`createTask` は論理削除済みも含めた件数を採番に使う、`features/task/actions/create-task.ts`）。
 
 `reorder` が持つのは同一 actual parent 内の rank（0-based）だけである。
 Server Action（`reorderTasks`）が要求する `{ parentId, orderedTaskIds }` は、rank と実行前のタスク一覧から `resolveReorderedSiblingIds`（`outline-ops.ts`）が再構成する。
@@ -1056,6 +1069,17 @@ revalidate 対象は操作が影響する画面で決める。
 
 `targetParentId` を `overTaskId` と別引数にしているのは、将来ポインタの水平オフセットから depth を投影するときに、「親はポインタ位置から、挿入位置はドロップ先の行から」を別々に決められるようにするためである。
 
+**`computeDropResult` の reparent 分岐が返す `newPosition` は rank ではなく、ドロップ先の行の実 position である。**
+親を跨ぐドロップでは対象が移動先の兄弟グループに居ないため、挿入位置は常に「ドロップ先の直前へ挿す」になる。
+これは `p_new_position` 以降の兄弟を +1 シフトする `move_task` の挙動と一致する（`docs/db-design.md` 第12.2節）。
+ドロップ先の行が移動先の兄弟グループに属さない場合は `null`（末尾）を返す。
+
+**可視の添字を DB の `position` として使わない。**
+`app_tasks` View は論理削除済みを除外するため（`supabase/migrations/20260808000003_app_tasks_view.sql`）、同じ兄弟グループに論理削除済みの行が残っていると、可視の並びの添字や件数は実 position とずれる。
+`move` Op の `newPosition` と `create` Op の `position` はいずれも実 position であり、可視の兄弟から数えた値を渡してはならない（`computeCreatePosition` のドキュメントコメント、`flatten-for-dnd.ts`）。
+`computeOutdent` は親の実 position に +1 した値を、`computeCreatePosition` はカーソル行の実 position を基準にする。
+末尾だけはクライアントから実 position を求められないため、`computeIndent` は `null` を返して `move_task` に解決させる（第 5.2 節）。
+
 `reorder` Op が持つのは兄弟内の rank だけであり、Server Action へ渡す ID 配列は `resolveReorderedSiblingIds` が全兄弟から再構成する（第 5.2 節）。
 `J` / `K` も同じ `reorder` Op を通るため、dnd とキーボードで並べ替えの経路は 1 本である。
 `<` / `>` と dnd の reparent も同じ `move` Op を通る。
@@ -1111,7 +1135,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 実行は `make fe-test`（`npm test` = `vitest run`）であり、品質ゲート `make check` の 3 段目に入る（第 3.6 節）。
 
 テストは対象と同じディレクトリに置く。
-主な対象は `lib/` 配下の純関数であり、次の 25 ファイル・273 件がある。
+主な対象は `lib/` 配下の純関数であり、次の 25 ファイル・304 件がある。
 
 | 対象 | テストファイル |
 |---|---|
@@ -1234,7 +1258,7 @@ Supabase CLI は devDependency として固定せず、`Makefile:10` の `npx -y
 ---
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 2591b2f
+- 対象コミット: 2752573
 - 作成日: 2026-08-08
 - 更新日: 2026-08-13
 - 生成者: Claude Code
