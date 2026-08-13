@@ -1,28 +1,21 @@
 import type { JSX } from "react";
 import { DagPanel } from "@/features/dag/components/dag-panel";
-import type { AppTask, TaskDependency } from "@/types/task";
-import { DetailPane } from "./detail-pane";
+import { DetailPane, type DetailPaneProps } from "./detail-pane";
 
-/** MobileDetailSheet の props (OutlineShell が参照する公開契約) */
-type MobileDetailSheetProps = {
-    task: AppTask | null;
-    allTasks: AppTask[];
-    dependencies: TaskDependency[];
-    /** `OutlineShell` の tempId → 実id 対応表。`DetailPane` へそのまま渡す (バグ修正、detail-pane.tsx 参照) */
-    tempIdRenames: ReadonlyMap<string, string>;
+/**
+ * MobileDetailSheet の props (OutlineShell が参照する公開契約)
+ *
+ * `DetailPane` の props はシート自身では一切使わず素通しするだけなので、個別に書き写さず
+ * `DetailPaneProps` をそのまま取り込む (各 props の意味は detail-pane.tsx のコメントを参照)。
+ * ただしフォーカス移動の ref (`DetailPaneHandle`) を要求するのは PC 幅の `OutlineShell` だけであり、
+ * シートは中継しないため `ref` だけは除く
+ */
+type MobileDetailSheetProps = Omit<DetailPaneProps, "ref"> & {
     flashTaskId: string | null;
     /** 前面のオーバーレイ (ヘルプ) が開いている間 true。開いているシートも背面として不活性にする */
     isInert: boolean;
     /** 背景タップ・閉じるボタンから呼ばれる。OutlineShell 側でカーソルを解除してシートを閉じる */
     onClose: () => void;
-    /** DetailPane の編集領域での `Esc` 終了後、一覧へフォーカスを戻す共通ヘルパー (docs/frontend-design.md §6.1)。ハードウェアキーボード接続時のために PC と同じ挙動を適用する */
-    onEscapeToOutline: () => void;
-    /** DetailPane のタイトル編集の確定 (改修 3、docs/frontend-design.md §5.2)。行内タイトル編集と同じ `updateTitle` Op を経由する */
-    onCommitTitle: (taskId: string, title: string) => void;
-    /** DetailPane の説明編集の確定 (改修 3) */
-    onCommitDescription: (taskId: string, description: string) => void;
-    /** DetailPane の期日編集の確定 (改修 3) */
-    onCommitDueDate: (taskId: string, dueDate: string | null) => void;
 };
 
 /**
@@ -34,19 +27,8 @@ type MobileDetailSheetProps = {
  * このコンポーネント自身が md 以上で display:none になる (md:hidden)。
  * 詳細表示・依存グラフのロジックは DetailPane / DagPanel をそのまま再利用し、重複させない
  */
-export const MobileDetailSheet = ({
-    task,
-    allTasks,
-    dependencies,
-    tempIdRenames,
-    flashTaskId,
-    isInert,
-    onClose,
-    onEscapeToOutline,
-    onCommitTitle,
-    onCommitDescription,
-    onCommitDueDate,
-}: MobileDetailSheetProps): JSX.Element => {
+export const MobileDetailSheet = ({ flashTaskId, isInert, onClose, ...detailPaneProps }: MobileDetailSheetProps): JSX.Element => {
+    const { task, allTasks, dependencies } = detailPaneProps;
     // カーソル (選択タスク) の有無をそのまま開閉状態とする。閉じる = カーソル解除なので、
     // 同じ行を再度タップすれば必ず開き直せる (シート側に開閉 state を二重に持たない)
     const isOpen = task !== null;
@@ -77,16 +59,7 @@ export const MobileDetailSheet = ({
                     </button>
                 </div>
 
-                <DetailPane
-                    task={task}
-                    allTasks={allTasks}
-                    dependencies={dependencies}
-                    tempIdRenames={tempIdRenames}
-                    onEscapeToOutline={onEscapeToOutline}
-                    onCommitTitle={onCommitTitle}
-                    onCommitDescription={onCommitDescription}
-                    onCommitDueDate={onCommitDueDate}
-                />
+                <DetailPane {...detailPaneProps} />
                 <DagPanel centerTaskId={task?.id ?? null} tasks={allTasks} dependencies={dependencies} flashTaskId={flashTaskId} />
             </section>
         </div>
