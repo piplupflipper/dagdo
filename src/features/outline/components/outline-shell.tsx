@@ -22,6 +22,14 @@ import { MobileDetailSheet } from "@/features/task-detail/components/mobile-deta
 import { useOutlineStore } from "@/store/outline-store";
 import type { AppTask, TaskDependency } from "@/types/task";
 
+/**
+ * カーソル行の `role="option"` 要素を探す
+ *
+ * `KeymapHelpOverlay` の `resolveRestoreTarget` と同じ探索対象である (docs/frontend-design.md §6.5)。
+ * カーソル未選択、あるいはカーソル行が折りたたみ・絞り込みで描かれていない場合は null になる
+ */
+const findCursorRowElement = (): HTMLElement | null => document.querySelector<HTMLElement>('[data-cursor="true"] [role="option"]');
+
 type OutlineShellProps = {
     userId: string;
     initialTasks: AppTask[];
@@ -94,7 +102,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
      * 見つからない場合は一覧のスクロールコンテナ (`data-role="outline-scroll"`、tabIndex={-1}) へ focus する
      */
     const focusOutlineList = (): void => {
-        const cursorRow = document.querySelector<HTMLElement>('[data-cursor="true"] [role="option"]');
+        const cursorRow = findCursorRowElement();
         if (cursorRow !== null) {
             cursorRow.focus();
             return;
@@ -112,6 +120,29 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
     const setCursor = useOutlineStore((state) => state.setCursor);
     const toggleCollapsed = useOutlineStore((state) => state.toggleCollapsed);
     const collapseAllTasks = useOutlineStore((state) => state.collapseAll);
+
+    /**
+     * カーソル行へ DOM のフォーカスを追従させる (docs/frontend-design.md §6.6、Issue #58)
+     *
+     * `j` / `k` はストアの `cursorTaskId` を動かすだけで、フォーカスは押した時点の要素に残る。
+     * `focusOutlineList` で一覧の行へ戻った後にカーソルだけが動くと、フォーカスされた行とカーソル行が食い違い、
+     * ブラウザのフォーカスリングがカーソルとは別の行に残ったままになる。
+     * 追従させるのはフォーカスが行の要素 (`role="option"`) にあるときだけで、行内編集の input や
+     * `DetailPane` の textarea、ヘッダのボタンからは奪わない (input は行の内側にあるが `role` を持たないため区別できる)
+     */
+    useEffect(() => {
+        if (cursorTaskId === null) {
+            return;
+        }
+        const activeElement = document.activeElement;
+        if (!(activeElement instanceof HTMLElement) || activeElement.getAttribute("role") !== "option") {
+            return;
+        }
+        if (activeElement.closest("[data-task-id]")?.getAttribute("data-task-id") === cursorTaskId) {
+            return;
+        }
+        findCursorRowElement()?.focus();
+    }, [cursorTaskId]);
 
     const tasksById = new Map(optimisticTasks.map((task) => [task.id, task]));
     const rows = buildOutlineTree(optimisticTasks);

@@ -1,6 +1,6 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { JSX, KeyboardEvent } from "react";
+import type { JSX } from "react";
 import { InlineTitleEditor } from "@/features/outline/components/inline-title-editor";
 import type { OutlineTreeRow } from "@/features/outline/lib/build-tree";
 import type { InlineTitleCaret } from "@/features/outline/lib/inline-title-edit";
@@ -77,13 +77,6 @@ export const OutlineRow = ({
 
     const rowStateClass = isCursor ? "bg-accent/10 shadow-[inset_2px_0_0_var(--color-accent)]" : isVisualSelected ? "bg-accent/15" : "hover:bg-bg-alt";
 
-    const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-        if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            onSelectCursor(task.id);
-        }
-    };
-
     return (
         <div
             ref={(element) => {
@@ -94,12 +87,20 @@ export const OutlineRow = ({
             data-task-id={task.id}
             data-cursor={isCursor ? "true" : undefined}
         >
+            {/*
+             * キーボード操作は document の keydown ハンドラ (use-outline-keymap.ts) が keymap テーブルだけを見て捌くため、
+             * 行にローカルな onKeyDown は置かない (Issue #58)。
+             * 以前はここで `Enter` / `Space` を「この行をカーソルにする」として拾っていたが、NORMAL の `Enter` は
+             * テーブルにも `focusDetailEditor` として登録されており、キーの担当が二重になっていた。
+             * この行がカーソル行であるとは限らない (tabIndex={-1} なのでフォーカスが載ったまま `j` / `k` で
+             * カーソルだけが先へ進みうる) ため、二重の担当は「カーソルが古い行へ引き戻される」形で衝突する
+             */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: キーボード操作は上記のとおり document の keydown ハンドラが担う */}
             <div
                 role="option"
                 aria-selected={isCursor}
                 tabIndex={-1}
                 onClick={() => onSelectCursor(task.id)}
-                onKeyDown={handleKeyDown}
                 className={`group flex items-center gap-1.5 rounded-base px-1.5 py-1 text-[13px] transition-shadow ${rowStateClass} ${isFlashing ? "animate-pulse" : ""}`}
                 style={{ paddingLeft: 6 + depth * INDENT_PX }}
             >
