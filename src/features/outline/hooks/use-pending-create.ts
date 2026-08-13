@@ -1,6 +1,7 @@
 import { type Dispatch, type SetStateAction, useRef, useState } from "react";
 import type { InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
-import { createPendingCreateRegistry, isSameLogicalRow, type PendingCreateRegistry, pruneConfirmedRenames, resolveRenamedLookup } from "@/features/outline/lib/pending-create-registry";
+import { createPendingCreateRegistry, type PendingCreateRegistry, pruneConfirmedRenames, resolveRenamedLookup } from "@/features/outline/lib/pending-create-registry";
+import { isSameLogicalRow } from "@/features/task/lib/temp-id-renames";
 import type { AppTask } from "@/types/task";
 
 type UsePendingCreateArgs = {

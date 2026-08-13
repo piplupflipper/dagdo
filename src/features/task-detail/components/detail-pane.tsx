@@ -1,9 +1,9 @@
 "use client";
 
 import { type JSX, type Ref, useImperativeHandle, useRef, useState } from "react";
-import { isSameLogicalRow } from "@/features/outline/lib/pending-create-registry";
-import { formatDateTime, isOverdue } from "@/features/task-detail/lib/format-date";
+import { isSameLogicalRow } from "@/features/task/lib/temp-id-renames";
 import { resolveStatus, type TaskStatus } from "@/features/task-detail/lib/task-status";
+import { formatDateTime, isOverdue } from "@/lib/date/timezone";
 import type { AppTask, TaskDependency } from "@/types/task";
 import { BlockedReasonBar } from "./blocked-reason-bar";
 import { DependencySection } from "./dependency-section";

@@ -158,7 +158,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
             if (result.code !== "TASK_BLOCKED") {
                 return undefined;
             }
-            const cause = findBlockingCause(taskId, tasksById, dependencies);
+            const cause = findBlockingCause(taskId, tasks, dependencies);
             if (cause !== null) {
                 flashTask(cause.id);
             }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { formatDate, formatDateTime, isOverdue } from "@/features/task-detail/lib/format-date";
+import { formatDate, formatDateTime, isOverdue } from "@/lib/date/timezone";
 
 describe("formatDate", () => {
     it("Asia/Tokyo の年月日へ整形する", () => {
@@ -15,6 +15,10 @@ describe("formatDateTime", () => {
     it("Asia/Tokyo の年月日と時刻へ整形する", () => {
         expect(formatDateTime("2026-08-13T00:00:00.000Z")).toBe("2026/08/13 09:00");
     });
+
+    it("UTC 深夜は Asia/Tokyo では翌日になる", () => {
+        expect(formatDateTime("2026-08-13T15:30:00.000Z")).toBe("2026/08/14 00:30");
+    });
 });
 
 describe("isOverdue", () => {
@@ -22,7 +26,7 @@ describe("isOverdue", () => {
         vi.useRealTimers();
     });
 
-    /** Asia/Tokyo で 2026-08-13 の昼にあたる時刻に固定する */
+    /** 現在時刻を固定する (「今日」が実行日に左右されないようにするため) */
     const freezeAt = (iso: string): void => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date(iso));
@@ -46,6 +50,13 @@ describe("isOverdue", () => {
     it("「今日」は実行環境のタイムゾーンではなく Asia/Tokyo で判定する", () => {
         // UTC では 2026-08-13 だが Asia/Tokyo では既に 2026-08-14 なので、2026-08-13 は期限切れになる
         freezeAt("2026-08-13T16:00:00.000Z");
+        expect(isOverdue("2026-08-13")).toBe(true);
+    });
+
+    it("使い回しているフォーマッタが日をまたいでも「今日」を持ち越さない", () => {
+        freezeAt("2026-08-13T03:00:00.000Z");
+        expect(isOverdue("2026-08-13")).toBe(false);
+        freezeAt("2026-08-14T03:00:00.000Z");
         expect(isOverdue("2026-08-13")).toBe(true);
     });
 });

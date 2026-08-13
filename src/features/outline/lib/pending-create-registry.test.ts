@@ -1,34 +1,12 @@
 import { describe, expect, it } from "vitest";
-import {
-    createPendingCreateRegistry,
-    isSameLogicalRow,
-    pruneConfirmedRenames,
-    queuePendingTitle,
-    recordRename,
-    resolveRenamedLookup,
-    takePendingTitle,
-} from "@/features/outline/lib/pending-create-registry";
+import { createPendingCreateRegistry, pruneConfirmedRenames, queuePendingTitle, recordRename, resolveRenamedLookup, takePendingTitle } from "@/features/outline/lib/pending-create-registry";
+import { isSameLogicalRow } from "@/features/task/lib/temp-id-renames";
 
-describe("recordRename / isSameLogicalRow", () => {
-    it("記録済みの tempId → 実id への変化は同一論理行と判定する", () => {
+describe("recordRename", () => {
+    it("記録した対応は同一論理行の判定 (isSameLogicalRow) で引ける", () => {
         const registry = createPendingCreateRegistry();
         recordRename(registry, "temp-1", "real-1");
         expect(isSameLogicalRow(registry.renamedIds, "temp-1", "real-1")).toBe(true);
-    });
-
-    it("記録の無い変化 (別の行への移動) は同一論理行と判定しない", () => {
-        const registry = createPendingCreateRegistry();
-        recordRename(registry, "temp-1", "real-1");
-        expect(isSameLogicalRow(registry.renamedIds, "real-1", "other-task")).toBe(false);
-        expect(isSameLogicalRow(registry.renamedIds, "temp-1", "other-task")).toBe(false);
-    });
-
-    it("previousId / nextId のいずれかが null なら同一論理行ではない", () => {
-        const registry = createPendingCreateRegistry();
-        recordRename(registry, "temp-1", "real-1");
-        expect(isSameLogicalRow(registry.renamedIds, null, "real-1")).toBe(false);
-        expect(isSameLogicalRow(registry.renamedIds, "temp-1", null)).toBe(false);
-        expect(isSameLogicalRow(registry.renamedIds, null, null)).toBe(false);
     });
 
     it("複数の create を独立に記録できる", () => {

@@ -1,27 +1,17 @@
 import { type JSX, useState } from "react";
 import { permanentlyDeleteTask } from "@/features/task/actions/permanently-delete-task";
 import { restoreTask } from "@/features/task/actions/restore-task";
+import { formatDateTime } from "@/lib/date/timezone";
 import type { TrashTask } from "@/types/task";
 
 export type TrashRowProps = {
     task: TrashTask;
 };
 
-/** deleted_at (ISO 文字列) を Asia/Tokyo の日時表示へ整形する */
-const formatDeletedAt = (iso: string): string =>
-    new Intl.DateTimeFormat("ja-JP", {
-        timeZone: "Asia/Tokyo",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-    }).format(new Date(iso));
-
 /**
  * ゴミ箱 1 行 (docs/frontend-design.md §4, §7.1)
  *
- * タイトル・削除日時 (Asia/Tokyo) ・復元/完全削除ボタンを表示する。
+ * タイトル・削除日時・復元/完全削除ボタンを表示する。
  * 完全削除は不可逆のため window.confirm で確認してから permanentlyDeleteTask を呼ぶ。
  * 成功時は revalidatePath (各 Server Action 内) により親の RSC から流れ直す props で一覧が更新される
  */
@@ -59,7 +49,7 @@ export const TrashRow = ({ task }: TrashRowProps): JSX.Element => {
         <div className="flex items-center gap-3 rounded-base border border-border bg-bg px-3 py-2 text-sm backdrop-blur-sm">
             <div className="min-w-0 flex-1">
                 <p className="truncate text-text">{task.title}</p>
-                <p className="text-[11px] text-text-dim">削除日時: {task.deleted_at !== null ? formatDeletedAt(task.deleted_at) : "-"}</p>
+                <p className="text-[11px] text-text-dim">削除日時: {task.deleted_at !== null ? formatDateTime(task.deleted_at) : "-"}</p>
                 {error !== null ? <p className="mt-1 text-[11px] text-overdue">{error}</p> : null}
             </div>
             <button
