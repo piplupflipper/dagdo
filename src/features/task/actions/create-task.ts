@@ -14,6 +14,11 @@ import { createAppClient } from "@/lib/supabase/app-client";
  * 指定した場合は末尾へ作成したうえで move_task RPC (req.md §54) でその位置へ移す。
  * 挿入位置を空けるための兄弟の position 更新を自前の複数 UPDATE に分けず、
  * 1 トランザクションで行う RPC に委ねるための 2 段構えである
+ *
+ * 本 Action だけは defineTaskAction (req.md §71 の定型) を使わず個別に実装する。
+ * 同関数は「Supabase 呼び出し 1 文 → 成功時のみ revalidate → data なし」を前提とするが、
+ * ここは DB 呼び出しが 3 つあり、位置調整の失敗時は revalidate してから失敗を返し、
+ * 成功時は作成した id を返すため、前提のいずれも満たさない
  */
 export const createTask = async ({ title, parentId, position }: { title: string; parentId: string | null; position: number | null }): Promise<ActionResult<{ id: string }>> => {
     const userId = await getSessionUserId();
