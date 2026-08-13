@@ -46,11 +46,27 @@ describe("buildKeymapHelpSections", () => {
         const items = buildKeymapHelpSections(outlineKeymap).flatMap((section) => section.groups.flatMap((group) => group.items));
         expect(items.length).toBe(outlineKeymap.length);
     });
+
+    // Issue #47。SearchOverlay の入力欄が処理するキーもヘルプには出す必要がある
+    it("SEARCH の Enter と文字入力がヘルプに現れる", () => {
+        const search = buildKeymapHelpSections(outlineKeymap).find((section) => section.mode === "SEARCH");
+        const items = search?.groups.flatMap((group) => group.items.map((item) => ({ labels: item.tokens.map((token) => token.label), description: item.description })));
+        expect(items).toEqual([
+            { labels: ["文字"], description: "入力した文字でタスクを絞り込む" },
+            // 確定しても絞り込みは残る (confirmSearch は searchQuery を消さない)。解除は Esc の側
+            { labels: ["Enter"], description: "クエリを確定し、絞り込みを残したまま NORMAL へ戻る" },
+            { labels: ["Esc"], description: "クエリを破棄して NORMAL へ戻る" },
+        ]);
+    });
 });
 
 describe("formatKeyToken", () => {
     it("Escape は Esc として表示する", () => {
         expect(formatKeyToken("Escape")).toBe("Esc");
+    });
+
+    it("プレースホルダの {char} は 文字 として表示する", () => {
+        expect(formatKeyToken("{char}")).toBe("文字");
     });
 
     it("読み替えの無いトークンはそのまま表示する", () => {

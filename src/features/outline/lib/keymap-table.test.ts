@@ -44,11 +44,13 @@ const EXPECTED_KEYS: readonly string[] = [
     "VISUAL 移動 k",
     "VISUAL 編集 x",
     "VISUAL モード Escape",
+    "SEARCH 絞り込み {char}",
+    "SEARCH モード Enter",
     "SEARCH モード Escape",
 ];
 
 /** ドキュメント専用エントリ (run なし)。実処理はコンポーネント側のローカルハンドラが行う */
-const DOCUMENTATION_ONLY_KEYS: readonly string[] = ["NORMAL 行内編集 Enter", "NORMAL 行内編集 Escape"];
+const DOCUMENTATION_ONLY_KEYS: readonly string[] = ["NORMAL 行内編集 Enter", "NORMAL 行内編集 Escape", "SEARCH 絞り込み {char}", "SEARCH モード Enter"];
 
 const labelOf = (entry: KeymapEntry): string => `${entry.mode} ${entry.category} ${entry.keys}`;
 
@@ -105,11 +107,16 @@ describe("dispatchableKeymap", () => {
         expect(dispatchableKeymap.map(labelOf).toSorted()).toEqual(EXPECTED_KEYS.filter((key) => !DOCUMENTATION_ONLY_KEYS.includes(key)).toSorted());
     });
 
-    it("行内編集中の Enter / Esc はドキュメント専用として登録されている (実処理は InlineTitleEditor が行う)", () => {
+    // 行内編集中のキーは InlineTitleEditor、SEARCH の文字入力と Enter は SearchOverlay の入力欄が処理する
+    it("入力欄のローカルハンドラが処理するキーはドキュメント専用として登録されている", () => {
         for (const label of DOCUMENTATION_ONLY_KEYS) {
             const entry = outlineKeymap.find((target) => labelOf(target) === label);
             expect(entry?.run, label).toBeUndefined();
         }
+    });
+
+    it("SEARCH の Enter / 文字入力は dispatcher の解決対象に含まれない (Esc だけが run を持つ)", () => {
+        expect(dispatchableKeymap.filter((entry) => entry.mode === "SEARCH").map(labelOf)).toEqual(["SEARCH モード Escape"]);
     });
 
     it("dispatcher が解決するエントリの mode + keys は一意 (trie が重複を弾く)", () => {

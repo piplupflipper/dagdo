@@ -74,7 +74,7 @@ type KeymapContext = {
  * 行内編集はモードではない (OutlineMode は NORMAL/VISUAL/SEARCH の 3 値を維持する) ため
  * `mode` 軸では文脈を表現できず、ヘルプ表示専用の軸である `category` に持たせている
  */
-export type KeymapCategory = "移動" | "編集" | "行内編集" | "構造変更" | "折りたたみ" | "モード" | "ヘルプ";
+export type KeymapCategory = "移動" | "編集" | "行内編集" | "構造変更" | "折りたたみ" | "絞り込み" | "モード" | "ヘルプ";
 
 /**
  * keymap の 1 エントリ。キーの一覧・説明・動作の単一の正 (docs/frontend-design.md §6.1)
@@ -201,7 +201,14 @@ export const outlineKeymap: readonly KeymapEntry[] = [
 
     // SEARCH
     // SearchOverlay の入力欄がフォーカスを持つ間は isEditableTarget により dispatcher 自体が動かない。
-    // フォーカスが外れているような想定外の状態に備えた保険として Esc のみ登録する
+    // 文字入力と Enter は入力欄のローカルハンドラが処理するため、NORMAL の行内編集と同じくドキュメント専用エントリ (run なし) とする。
+    // Esc だけは、フォーカスが外れているような想定外の状態に備えた保険として run を持たせる。
+    // 文字入力は特定のキーではないため `{char}` というプレースホルダのトークンで表し、
+    // 表示だけを keymap-help.ts の TOKEN_LABELS で `文字` へ読み替える。
+    // confirmSearch (store/outline-store.ts) は mode を NORMAL に戻すだけで searchQuery を消さないため、
+    // Enter の説明は絞り込みが残ることまで書く。絞り込みを解除するのは Esc (cancelSearch) である
+    { keys: "{char}", mode: "SEARCH", category: "絞り込み", description: "入力した文字でタスクを絞り込む" },
+    { keys: "Enter", mode: "SEARCH", category: "モード", description: "クエリを確定し、絞り込みを残したまま NORMAL へ戻る" },
     { keys: "Escape", mode: "SEARCH", category: "モード", description: "クエリを破棄して NORMAL へ戻る", run: ({ store }) => store.cancelSearch() },
 ];
 
