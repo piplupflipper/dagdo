@@ -9,6 +9,11 @@
 --   - 負の position が INVALID_POSITION (SQLSTATE ET006) で拒否されること
 --   - 他ユーザーの task を親に指定すると INVALID_PARENT (SQLSTATE ET007) で拒否されること
 --
+-- エラーはメッセージ前置詞 (throws_like) と SQLSTATE (throws_ok) の両方で固定する。
+-- src/features/task/lib/map-db-error.ts は SQLSTATE を最優先で判定するため、メッセージだけを
+-- 検査すると errcode の書き換えを検出できない。ET001〜ET007 の全体は
+-- 010_error_contract.test.sql がまとめて固定する。
+--
 -- 本ファイルは 007 と同じく authenticated ロールへは切り替えず、request.jwt.claims のみを
 -- 設定して実行する。move_task 自身が持つ `user_id = next_auth.uid()` の絞り込みが、RLS の
 -- 有無に依らず他ユーザーの行を対象外にすることを確かめるためである。
@@ -17,7 +22,7 @@
 -- 固定データは使わず、このファイル専用の user / tasks を都度 INSERT する
 -- (supabase test db は seed.sql を適用しないため、tests/ 側でフィクスチャを用意する)。
 begin;
-select plan(13);
+select plan(15);
 
 insert into next_auth.users (id, name, email)
 values
@@ -184,7 +189,18 @@ select throws_like(
   'a negative position is rejected with INVALID_POSITION'
 );
 
--- 12. 拒否された移動は 1 行も書き換えない (position 検査が更新より先に走る)
+-- 12. 同じ拒否が SQLSTATE ET006 で返る (map-db-error.ts が最優先で見る契約)
+select throws_ok(
+  $$select public.move_task(
+      '80000000-0000-0000-0000-0000000000a1',
+      '80000000-0000-0000-0000-000000000001',
+      -1)$$,
+  'ET006'::char(5),
+  null,
+  'a negative position is rejected with SQLSTATE ET006'
+);
+
+-- 13. 拒否された移動は 1 行も書き換えない (position 検査が更新より先に走る)
 select is(
   (select array_agg(t.title || ':' || t.position order by t.position)
    from public.tasks t
@@ -194,7 +210,7 @@ select is(
   'the rejected move leaves the root group untouched'
 );
 
--- 13. 他ユーザー (move other) の task Z を親に指定すると INVALID_PARENT (ET007) で拒否される
+-- 14. 他ユーザー (move other) の task Z を親に指定すると INVALID_PARENT (ET007) で拒否される
 select throws_like(
   $$select public.move_task(
       '80000000-0000-0000-0000-0000000000a1',
@@ -202,6 +218,17 @@ select throws_like(
       0)$$,
   'INVALID_PARENT%',
   'a parent owned by another user is rejected with INVALID_PARENT'
+);
+
+-- 15. 同じ拒否が SQLSTATE ET007 で返る
+select throws_ok(
+  $$select public.move_task(
+      '80000000-0000-0000-0000-0000000000a1',
+      '80000000-0000-0000-0000-0000000000f1',
+      0)$$,
+  'ET007'::char(5),
+  null,
+  'a parent owned by another user is rejected with SQLSTATE ET007'
 );
 
 select * from finish();
