@@ -1,5 +1,5 @@
 /**
- * 行内タイトル編集 (`i` / `A`) の状態表現 (docs/frontend-design.md §6.1)
+ * 行内タイトル編集 (`i` / `I` / `a` / `A`) の状態表現 (docs/frontend-design.md §6.1)
  *
  * 編集中であることはモード (OutlineMode) にもストアにも持たせず、`OutlineShell` のローカル state
  * (`InlineTitleEdit | null`) 1 個だけで表す。グローバル keymap の抑止は既存の `isEditableTarget`

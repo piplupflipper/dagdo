@@ -66,7 +66,7 @@ describe("advanceKeySequence", () => {
     it("テーブルに無いキーは待機せず未マッチにする", () => {
         const press = createPresser("NORMAL");
         expect(press("q").type).toBe("unmatched");
-        expect(press("a").type).toBe("unmatched");
+        expect(press("w").type).toBe("unmatched");
     });
 
     it("待機中プレフィックスの続きに一致しない打鍵は破棄し、待機も解除する", () => {
