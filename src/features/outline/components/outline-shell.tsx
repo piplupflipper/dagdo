@@ -7,7 +7,10 @@ import { OutlinePane } from "@/features/outline/components/outline-pane";
 import { PaneDivider } from "@/features/outline/components/pane-divider";
 import { StatusLine } from "@/features/outline/components/status-line";
 import { useOutlineKeymap } from "@/features/outline/hooks/use-outline-keymap";
+import { formatActionError, formatTaskError } from "@/features/outline/lib/action-error";
+import { findBlockingCause } from "@/features/outline/lib/blocking-cause";
 import { buildOutlineTree, collectCollapsibleTaskIds, deriveVisibleRows } from "@/features/outline/lib/build-tree";
+import { callServerForOp } from "@/features/outline/lib/dispatch-op";
 import {
     computeCreatePosition,
     computeIndent,
@@ -19,7 +22,7 @@ import {
     type SiblingReorderResult,
 } from "@/features/outline/lib/flatten-for-dnd";
 import type { InlineTitleCaret, InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
-import { applyOutlineOp, type OutlineOp, resolveReorderedSiblingIds } from "@/features/outline/lib/outline-ops";
+import { applyOutlineOp, type OutlineOp } from "@/features/outline/lib/outline-ops";
 import { DEFAULT_LEFT_PANE_RATIO, PANE_RATIO_STORAGE_KEY, parseStoredPaneRatio } from "@/features/outline/lib/pane-ratio";
 import {
     createPendingCreateRegistry,
@@ -30,6 +33,7 @@ import {
     resolveRenamedLookup,
     takePendingTitle,
 } from "@/features/outline/lib/pending-create-registry";
+import { siblingRankOf } from "@/features/outline/lib/sibling-rank";
 import { EMPTY_UNDO_HISTORY, popRedoEntry, popUndoEntry, pushToRedo, pushToUndo, recordEntry, type UndoHistoryState } from "@/features/outline/lib/undo-history";
 import { SearchOverlay } from "@/features/search/components/search-overlay";
 import { filterTasks } from "@/features/search/lib/filter-tasks";
@@ -38,10 +42,8 @@ import { createTask } from "@/features/task/actions/create-task";
 import { moveTask } from "@/features/task/actions/move-task";
 import { reopenTask } from "@/features/task/actions/reopen-task";
 import { reorderTasks } from "@/features/task/actions/reorder-tasks";
-import { restoreTask } from "@/features/task/actions/restore-task";
 import { softDeleteTask } from "@/features/task/actions/soft-delete-task";
 import { updateTask } from "@/features/task/actions/update-task";
-import type { ActionResult, TaskErrorCode } from "@/features/task/lib/action-result";
 import { DetailPane, type DetailPaneHandle } from "@/features/task-detail/components/detail-pane";
 import { MobileDetailSheet } from "@/features/task-detail/components/mobile-detail-sheet";
 import { useOutlineStore } from "@/store/outline-store";
@@ -51,85 +53,6 @@ export type OutlineShellProps = {
     userId: string;
     initialTasks: AppTask[];
     initialDependencies: TaskDependency[];
-};
-
-/** DB エラー契約 (req.md §66) の表示用コード。ステータスラインの "E1001: ..." 表示に使う */
-const ERROR_DISPLAY_CODE: Record<TaskErrorCode, string> = {
-    TASK_NOT_FOUND: "E1000",
-    TASK_BLOCKED: "E1001",
-    TASK_PARENT_CYCLE: "E1002",
-    TASK_DEPENDENCY_CYCLE: "E1003",
-    DEPENDENCY_ALREADY_EXISTS: "E1004",
-    INVALID_POSITION: "E1005",
-    INVALID_PARENT: "E1006",
-};
-
-const formatActionError = (result: Extract<ActionResult, { ok: false }>): string => `${ERROR_DISPLAY_CODE[result.code]}: ${result.code} — ${result.message}`;
-
-/** completeTask が TASK_BLOCKED を返した際の原因タスクを、依存関係から自前で計算する (実装要点 2) */
-const findBlockingCause = (taskId: string, tasksById: ReadonlyMap<string, AppTask>, dependencies: readonly TaskDependency[]): AppTask | null => {
-    for (const dependency of dependencies) {
-        if (dependency.task_id !== taskId) {
-            continue;
-        }
-        const blocker = tasksById.get(dependency.depends_on_task_id);
-        if (blocker !== undefined && blocker.completed_at === null) {
-            return blocker;
-        }
-    }
-    return null;
-};
-
-/**
- * 同一 actual parent 内での、タスクの現在の並び順 (0-based rank) を返す (Phase 2、undo/redo の逆操作の材料)
- *
- * `reorder` Op の `newPosition` (rank) と同じ基準で「今どこにいるか」を求める。
- * `outline-ops.ts` の `resolveReorderedSiblingIds` と対になる、逆方向の解決
- */
-const siblingRankOf = (tasks: readonly AppTask[], taskId: string): number => {
-    const target = tasks.find((task) => task.id === taskId);
-    if (target === undefined) {
-        return -1;
-    }
-    return [...tasks]
-        .filter((task) => task.parent_id === target.parent_id)
-        .sort((a, b) => a.position - b.position)
-        .findIndex((task) => task.id === taskId);
-};
-
-/**
- * Op を対応する Server Action へ振り分ける (undo/redo の再実行、Phase 2)
- *
- * 通常のハンドラ (runComplete 等) は Op の種類ごとに専用の逆操作の組み立てとセットで書くが、
- * undo/redo は「確定済みの任意の Op 列」を汎用に再実行する必要があるため、ここに 1 箇所へ集約する。
- * `reorder` だけ、Server Action (`reorderTasks`) が要求する `{ parentId, orderedTaskIds }` を
- * `newPosition` (rank) から再構成するために `tasksSnapshot` (dispatch 時点の optimisticTasks) を要る
- */
-const callServerForOp = (op: OutlineOp, tasksSnapshot: readonly AppTask[]): Promise<ActionResult<unknown>> => {
-    switch (op.type) {
-        case "create":
-            return createTask({ title: op.title, parentId: op.parentId, position: op.position });
-        case "complete":
-            return completeTask({ taskId: op.taskId });
-        case "reopen":
-            return reopenTask({ taskId: op.taskId });
-        case "updateTitle":
-            return updateTask({ taskId: op.taskId, title: op.title });
-        case "updateDescription":
-            return updateTask({ taskId: op.taskId, description: op.description });
-        case "updateDueDate":
-            return updateTask({ taskId: op.taskId, dueDate: op.dueDate });
-        case "move":
-            return moveTask({ taskId: op.taskId, newParentId: op.newParentId, newPosition: op.newPosition });
-        case "reorder": {
-            const spec = resolveReorderedSiblingIds(tasksSnapshot, op);
-            return spec === null ? Promise.resolve<ActionResult>({ ok: true, data: undefined }) : reorderTasks(spec);
-        }
-        case "softDelete":
-            return softDeleteTask({ taskId: op.taskId });
-        case "restore":
-            return restoreTask({ taskId: op.taskId });
-    }
 };
 
 /**
@@ -307,7 +230,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                     if (cause !== null) {
                         flashTask(cause.id);
                     }
-                    setStatusError(`${ERROR_DISPLAY_CODE.TASK_BLOCKED}: TASK_BLOCKED — ${cause?.title ?? "依存先"} が未完了のため完了できません`);
+                    setStatusError(formatTaskError("TASK_BLOCKED", `${cause?.title ?? "依存先"} が未完了のため完了できません`));
                     return;
                 }
                 setStatusError(formatActionError(result));
