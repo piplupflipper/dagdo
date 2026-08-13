@@ -20,7 +20,14 @@ export type SiblingReorderResult = {
 /** 親変更 (reparent) の結果。moveTask({ taskId, newParentId, newPosition }) の後半にそのまま渡せる */
 export type ReparentResult = {
     newParentId: string | null;
-    newPosition: number;
+    /**
+     * 新しい actual parent 内の実 DB position。`null` は「新しい兄弟グループの末尾へ追加する」を表す
+     * (move_task RPC の `p_new_position = NULL`, supabase/migrations/20260813000002_move_task_append_to_tail.sql)
+     *
+     * 表示されている兄弟の並び順 (添字) を基準にしてはならない理由は `computeCreatePosition` の
+     * ドキュメントコメントと同じである。末尾だけは実 position を求められないため `null` で表す (Issue #53)
+     */
+    newPosition: number | null;
 };
 
 /** カーソル行を基準にした新規タスクの作成位置 (`o` は below、`O` は above, docs/frontend-design.md §6.1) */
@@ -110,7 +117,11 @@ export const findSiblingTaskId = ({ tasks, taskId, direction }: { tasks: readonl
 /**
  * タスクを直前の兄弟の子として繰り込む (indent, `>`, docs/frontend-design.md §6.1, §9)
  *
- * 新しい親 (直前の兄弟) の子の末尾に追加する
+ * 新しい親 (直前の兄弟) の子の末尾に追加する。末尾は `newPosition: null` で表し、実 position は
+ * move_task RPC が求める (supabase/migrations/20260813000002_move_task_append_to_tail.sql)。
+ * `app_tasks` View は論理削除済みを除外するため、クライアントは移動先の実際の末尾を知れない。
+ * 変更前は可視の子の数をそのまま `newPosition` にしていたため、移動先に論理削除済みの子が残っていると
+ * 末尾ではなく可視の最後の子より前へ入っていた (Issue #53)
  */
 export const computeIndent = ({ tasks, taskId }: { tasks: readonly AppTask[]; taskId: string }): ReparentResult | null => {
     const target = tasks.find((task) => task.id === taskId);
@@ -123,14 +134,16 @@ export const computeIndent = ({ tasks, taskId }: { tasks: readonly AppTask[]; ta
     if (previousSibling === undefined) {
         return null;
     }
-    const newSiblingCount = tasks.filter((task) => task.parent_id === previousSibling.id).length;
-    return { newParentId: previousSibling.id, newPosition: newSiblingCount };
+    return { newParentId: previousSibling.id, newPosition: null };
 };
 
 /**
  * タスクの親を 1 階層上げる (outdent, `<`, docs/frontend-design.md §6.1, §9)
  *
- * 現在の親の直後 (現在の親と同じ階層) へ挿入する
+ * 現在の親の直後 (現在の親と同じ階層) へ挿入する。
+ * 基準にするのは親の実 position であり、表示されている兄弟の並び順 (添字) ではない
+ * (`computeCreatePosition` のドキュメントコメント参照)。移動先の兄弟グループに論理削除済みの行が
+ * 残っていても `parent.position + 1` は実 position のままである
  */
 export const computeOutdent = ({ tasks, taskId }: { tasks: readonly AppTask[]; taskId: string }): ReparentResult | null => {
     const target = tasks.find((task) => task.id === taskId);
@@ -188,7 +201,13 @@ export const computeCreatePosition = ({ tasks, cursorTaskId, placement }: { task
  *
  * `overTaskId` はドロップ先の行 (dnd-kit の `over.id`)。挿入位置は dnd-kit の `arrayMove` と同じ規則、
  * すなわち「対象 1 件を抜いた並びの、抜く前に `overTaskId` があった添字」へ挿し込む形で決める。
- * 結果として上へのドラッグはドロップ先の直前、下へのドラッグはドロップ先の直後に入る
+ * 結果として上へのドラッグはドロップ先の直前、下へのドラッグはドロップ先の直後に入る。
+ *
+ * reparent 分岐が返す `newPosition` は rank ではなくドロップ先の行の実 position である (Issue #53)。
+ * 親を跨ぐドロップでは対象が移動先の兄弟グループに居ないため、上記の規則は常に「ドロップ先の直前へ挿す」
+ * になり、これは move_task RPC が `p_new_position` 以降を +1 シフトする挙動 (migration 0005) と一致する。
+ * 変更前は可視の兄弟の中での添字を渡していたため、移動先に論理削除済みの兄弟が残っていると
+ * 1 つ手前のスロットへ落ちていた
  */
 export const computeDropResult = ({
     tasks,
@@ -202,7 +221,8 @@ export const computeDropResult = ({
     overTaskId: string;
 }): { kind: "reorder"; result: SiblingReorderResult } | { kind: "reparent"; result: ReparentResult } => {
     const target = tasks.find((task) => task.id === taskId);
-    const orderedTaskIds = siblingsOf(tasks, targetParentId).map((sibling) => sibling.id);
+    const siblings = siblingsOf(tasks, targetParentId);
+    const orderedTaskIds = siblings.map((sibling) => sibling.id);
     const fromRank = orderedTaskIds.indexOf(taskId);
     const overRank = orderedTaskIds.indexOf(overTaskId);
     // ドロップ先がその兄弟グループに属さない場合 (現状の呼び出し方では起きない) は末尾へ落とす
@@ -216,5 +236,7 @@ export const computeDropResult = ({
     if (sameParent) {
         return { kind: "reorder", result: { parentId: targetParentId, orderedTaskIds } };
     }
-    return { kind: "reparent", result: { newParentId: targetParentId, newPosition: orderedTaskIds.indexOf(taskId) } };
+    // ドロップ先の行が占めている実 position をそのまま渡す。
+    // 兄弟グループに属さないドロップ先は末尾 (null) へ落とす (上記 insertRank と同じ扱い)
+    return { kind: "reparent", result: { newParentId: targetParentId, newPosition: siblings[overRank]?.position ?? null } };
 };

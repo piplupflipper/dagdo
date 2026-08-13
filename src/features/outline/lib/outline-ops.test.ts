@@ -254,6 +254,88 @@ describe("applyOutlineOp: reorder/move の位置詰め", () => {
 });
 
 /**
+ * `move` の `newPosition: null` は「新しい兄弟グループの末尾へ追加する」を表す
+ * (move_task RPC の `p_new_position = NULL`、supabase/migrations/20260813000002_move_task_append_to_tail.sql)
+ *
+ * `computeIndent` (`>`) と、親を跨ぐドロップでドロップ先が兄弟グループに属さない場合が生成する
+ * (src/features/outline/lib/flatten-for-dnd.ts)
+ */
+describe("applyOutlineOp: move の newPosition = null (兄弟グループ末尾への追加)", () => {
+    it("移動先の兄弟の後ろへ入り、他の兄弟の position を動かさない", () => {
+        const tasks = [task({ id: "parent", position: 0 }), task({ id: "x", parentId: "parent", position: 0 }), task({ id: "y", parentId: "parent", position: 1 }), task({ id: "moved", position: 1 })];
+        const result = applyOutlineOp(tasks, [], { type: "move", taskId: "moved", newParentId: "parent", newPosition: null });
+        const map = byId(result);
+        expect(map.get("moved")?.position).toBe(2);
+        expect(map.get("x")?.position).toBe(0);
+        expect(map.get("y")?.position).toBe(1);
+    });
+
+    it("子を持たない親への末尾指定は 0 になる", () => {
+        const tasks = [task({ id: "parent", position: 0 }), task({ id: "moved", position: 1 })];
+        const result = applyOutlineOp(tasks, [], { type: "move", taskId: "moved", newParentId: "parent", newPosition: null });
+        expect(byId(result).get("moved")?.position).toBe(0);
+    });
+
+    it("同一の兄弟グループ内での末尾指定は、隙間を詰めた後の末尾へ入る", () => {
+        // 詰める前に末尾を求めると対象自身の分だけ 1 つ大きくなり、position の連番に穴が空く
+        const tasks = [task({ id: "a", position: 0 }), task({ id: "b", position: 1 }), task({ id: "c", position: 2 })];
+        const result = applyOutlineOp(tasks, [], { type: "move", taskId: "a", newParentId: null, newPosition: null });
+        const map = byId(result);
+        expect(map.get("b")?.position).toBe(0);
+        expect(map.get("c")?.position).toBe(1);
+        expect(map.get("a")?.position).toBe(2);
+    });
+});
+
+/**
+ * 論理削除済みの兄弟が残っている状態での `move` (Issue #53)
+ *
+ * `app_tasks` View は論理削除済みを除外するため (supabase/migrations/20260808000003_app_tasks_view.sql)、
+ * ローカルの tasks にはその行が存在しない。`move_task` RPC は論理削除済みも含めた実 position で動くため、
+ * 両者が一致する範囲をここで固定する。
+ * サーバー側の同じシナリオは supabase/tests/008_move_task.test.sql のケース6〜9 が固定する
+ */
+describe("applyOutlineOp: 論理削除済みの兄弟がいる move", () => {
+    /** 移動先の親 p の子が X(0) / Y(1, 論理削除済みなので tasks には存在しない) / Z(2)、移動する m はルート直下 */
+    const withDeletedSibling = (): AppTask[] => [
+        task({ id: "p", position: 0 }),
+        task({ id: "x", parentId: "p", position: 0 }),
+        task({ id: "z", parentId: "p", position: 2 }),
+        task({ id: "m", position: 1 }),
+    ];
+
+    it("ドロップ先の実 position を渡すと、可視の兄弟の position がサーバーと一致する", () => {
+        // computeDropResult が z の実 position 2 を渡す。
+        // サーバーは X(0) / Y(1, 削除済み) / m(2) / Z(3) にする
+        const result = applyOutlineOp(withDeletedSibling(), [], { type: "move", taskId: "m", newParentId: "p", newPosition: 2 });
+        const map = byId(result);
+        expect(map.get("x")?.position).toBe(0);
+        expect(map.get("m")?.position).toBe(2);
+        expect(map.get("z")?.position).toBe(3);
+    });
+
+    it("末尾指定は、論理削除済みの兄弟が末尾以外に居るならサーバーの採番と一致する", () => {
+        // サーバーの末尾は max(0, 1, 2) + 1 = 3、ローカルの末尾は max(0, 2) + 1 = 3 で一致する
+        const result = applyOutlineOp(withDeletedSibling(), [], { type: "move", taskId: "m", newParentId: "p", newPosition: null });
+        const map = byId(result);
+        expect(map.get("m")?.position).toBe(3);
+        expect(map.get("x")?.position).toBe(0);
+        expect(map.get("z")?.position).toBe(2);
+    });
+
+    it("末尾指定で論理削除済みの兄弟が末尾に居る場合、position はサーバーより小さくなるが表示順は一致する", () => {
+        // p の子が X(0) / Y(1, 論理削除済み) のとき、サーバーの末尾は 2、ローカルの末尾は 1 になる。
+        // ローカルには Y が存在せず実末尾を知る手立てが無い (applyCreate と同じ妥協点)。
+        // それでも m は可視の兄弟すべてより後ろに来るため、表示順はサーバーと一致する
+        const tasks = [task({ id: "p", position: 0 }), task({ id: "x", parentId: "p", position: 0 }), task({ id: "m", position: 1 })];
+        const result = applyOutlineOp(tasks, [], { type: "move", taskId: "m", newParentId: "p", newPosition: null });
+        const children = result.filter((child) => child.parent_id === "p").sort((left, right) => left.position - right.position);
+        expect(children.map((child) => child.id)).toEqual(["x", "m"]);
+        expect(byId(result).get("m")?.position).toBe(1);
+    });
+});
+
+/**
  * `softDelete` の undo (`u`) は `[restore, move]` の 2 Op 列である (invert-op.ts の `softDelete` 分岐)
  *
  * サーバー側の `restore_task` RPC は復元対象を actual sibling group の末尾へ移し (req.md §26)、

@@ -9,6 +9,10 @@ import type { AppTask, TaskDependency } from "@/types/task";
  *
  * `move` の `newPosition` は `move_task` RPC の `p_new_position` と同じ意味 (新しい actual parent 内の
  * 実 DB position、対象を除いた兄弟の隙間詰め・隙間空けの基準になる、migration 0005)。
+ * `null` は「新しい兄弟グループの末尾へ追加する」を表す (migration 20260813000002、Issue #53)。
+ * `app_tasks` View は論理削除済みを除外するため、クライアントは末尾の実 position を知れない。
+ * 末尾を数値で表そうとして可視の兄弟の数を渡すと、論理削除済みの兄弟が残っているときに
+ * 可視の最後の兄弟より前へ入ってしまう。
  * `reorder` の `newPosition` はこれとは異なり、同一 actual parent 内での新しい並び順 (0-based の rank) を表す。
  * `reorder_tasks` RPC (migration 0007) は「兄弟が現在占めている position の集合 (slot) はそのままに、
  * `orderedTaskIds` の順序だけを当てはめる」ため、rank を渡せば `applyOutlineOp` 側で slot を再構成できる。
@@ -30,7 +34,7 @@ export type OutlineOp =
     | { type: "updateDescription"; taskId: string; description: string }
     /** DetailPane の期日編集 (「保存」ボタンで確定)。updateDescription と同じ単純なフィールドパッチ */
     | { type: "updateDueDate"; taskId: string; dueDate: string | null }
-    | { type: "move"; taskId: string; newParentId: string | null; newPosition: number }
+    | { type: "move"; taskId: string; newParentId: string | null; newPosition: number | null }
     | { type: "reorder"; taskId: string; newPosition: number }
     | { type: "softDelete"; taskId: string }
     | {
@@ -61,6 +65,14 @@ type ApplyOutlineOpOptions = {
 };
 
 const siblingsSortedByPosition = (tasks: readonly AppTask[], parentId: string | null): AppTask[] => [...tasks].filter((task) => task.parent_id === parentId).sort((a, b) => a.position - b.position);
+
+/**
+ * 兄弟グループの末尾 (max(position) + 1) を求める。`move_task` / `restore_task` の末尾採番と同じ式
+ *
+ * 対象タスク自身は移動後に position を上書きするため除外する (RPC の `id <> p_task_id` と同じ)
+ */
+const tailPositionOf = (tasks: readonly AppTask[], parentId: string | null, excludeTaskId: string): number =>
+    tasks.reduce((tail, task) => (task.id !== excludeTaskId && task.parent_id === parentId ? Math.max(tail, task.position + 1) : tail), 0);
 
 /**
  * `reorder` Op (taskId + 兄弟内の新しい rank) から、`reorderTasks` Server Action へ渡す
@@ -117,7 +129,13 @@ const applyCreate = (tasks: readonly AppTask[], op: Extract<OutlineOp, { type: "
     return [...shifted, newTask];
 };
 
-/** move_task RPC 相当: 旧兄弟グループの隙間を詰め、新兄弟グループに隙間を空けたうえで対象を移す (migration 0005) */
+/**
+ * move_task RPC 相当: 旧兄弟グループの隙間を詰め、新兄弟グループに隙間を空けたうえで対象を移す
+ * (migration 0005、末尾指定は migration 20260813000002)
+ *
+ * RPC と同じ順序 (隙間詰め → 末尾の解決 → 隙間空け) で 2 段に分ける。
+ * 移動先が移動元と同じ兄弟グループのとき、詰める前に末尾を求めると対象自身の分だけ 1 つ大きくなるためである
+ */
 const applyMove = (tasks: readonly AppTask[], op: Extract<OutlineOp, { type: "move" }>): AppTask[] => {
     const target = tasks.find((task) => task.id === op.taskId);
     if (target === undefined) {
@@ -125,18 +143,18 @@ const applyMove = (tasks: readonly AppTask[], op: Extract<OutlineOp, { type: "mo
     }
     const oldParentId = target.parent_id;
     const oldPosition = target.position;
-    return tasks.map((task) => {
+    const compacted = tasks.map((task) => (task.id !== op.taskId && task.parent_id === oldParentId && task.position > oldPosition ? { ...task, position: task.position - 1 } : task));
+    // newPosition === null は「新しい兄弟グループの末尾へ」(move_task の p_new_position = NULL)。
+    // move_task は論理削除済みも含めた実末尾を使うが、ローカルの tasks には論理削除済み行が存在しない
+    // (softDelete で配列から除去済み) ため、移動先の末尾に論理削除済みの兄弟が並んでいる場合は
+    // ここで求まる値がサーバーの採番より小さくなりうる (applyCreate と同じ妥協点)。
+    // 可視の兄弟はいずれもこの値より前に居るため、表示上の並び順はサーバーと一致する
+    const newPosition = op.newPosition ?? tailPositionOf(compacted, op.newParentId, op.taskId);
+    return compacted.map((task) => {
         if (task.id === op.taskId) {
-            return { ...task, parent_id: op.newParentId, position: op.newPosition };
+            return { ...task, parent_id: op.newParentId, position: newPosition };
         }
-        let position = task.position;
-        if (task.parent_id === oldParentId && position > oldPosition) {
-            position -= 1;
-        }
-        if (task.parent_id === op.newParentId && position >= op.newPosition) {
-            position += 1;
-        }
-        return position === task.position ? task : { ...task, position };
+        return task.parent_id === op.newParentId && task.position >= newPosition ? { ...task, position: task.position + 1 } : task;
     });
 };
 
