@@ -28,9 +28,6 @@ GitHub ログインには OAuth App の設定が必要（[docs/github-oauth-setu
 
 操作はリポジトリルートの Makefile に集約している。一覧は `make help`。
 
-- `make fe-dev` / `make fe-build` / `make fe-check` / `make fe-format` — Next.js アプリ
+- `make fe-dev` / `make fe-build` / `make fe-check` / `make fe-test` / `make fe-format` — Next.js アプリ
 - `make db-start` / `make db-reset` / `make db-test` / `make db-types` — ローカル Supabase
-- `make check` — 全品質ゲート（fe-check + db-test）
-- `npm test` — 単体テスト（vitest）。Makefile ターゲットは無く、`make check` にも含まれない
-
-品質ゲートの全体像と、まっさらな作業ツリーで `make fe-check` が `LayoutProps` 未定義で落ちる既知の問題は `docs/frontend-design.md` §3.6 に記載する。
+- `make check` — 全品質ゲート（fe-build + fe-check + fe-test + db-test）
