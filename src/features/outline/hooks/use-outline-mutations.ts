@@ -258,12 +258,14 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
                 return;
             }
             const realId = result.data.id;
-            recordRename(pendingCreate, tempId, realId);
+            // 先読みしておいた行を実 id 名義にしたもの。undo 履歴の材料であると同時に、
+            // revalidate 到着までのつなぎとして一覧へ差し込む行でもある (Issue #60、pending-create-registry.ts)
+            const snapshot: AppTask | undefined = projectedRow === undefined ? undefined : { ...projectedRow, id: realId };
+            recordRename(pendingCreate, tempId, realId, snapshot);
             setCursor(realId);
             setInlineTitleEdit((current) => (current !== null && current.taskId === tempId ? { ...current, taskId: realId } : current));
             setStatusError(null);
-            if (projectedRow !== undefined) {
-                const snapshot: AppTask = { ...projectedRow, id: realId };
+            if (snapshot !== undefined) {
                 pushHistory("新規タスク", [{ type: "softDelete", taskId: realId }], [{ type: "restore", taskId: realId, snapshot }]);
             }
             // settle 前に Enter/Esc で確定されていたタイトルを、実id の通常パイプライン
