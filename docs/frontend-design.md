@@ -1,7 +1,7 @@
 # dagdo フロントエンド技術設計書
 
 - 対象リポジトリ: dagdo
-- 対象コミット: a9b61ed
+- 対象コミット: 1a167fc
 - 作成日: 2026-08-08
 - 更新日: 2026-08-13
 - 生成者: Claude Code
@@ -73,7 +73,7 @@ Auth.js の設定詳細と Custom JWT 生成の実装は `docs/auth-design.md`�
 | Lint / Format | biome | 本書が定める設定に従う（第 3 章） | スペース 4 / 200 桁 / ダブルクォート / セミコロン必須 |
 | 型検査 | tsc | Next.js が要求するバージョンに追従 | 品質ゲートの型検査はこちらを正とする |
 | 死蔵検出 | knip | 最新 stable | 生成物（`database.types.ts`）と意図的未使用の factory（`service-client.ts`）のみ対象外とする（`knip.json`） |
-| ビルド検証 | `next build` | Next.js 本体に追従 | `.next/types` を生成するため `tsc` の前提になる（第 3.6 節） |
+| ビルド検証 | `next build` | Next.js 本体に追従 | `.next/types` を生成するため `tsc` の前提であり、品質ゲートの 1 段目に置く（第 3.6 節） |
 | テスト | vitest + @testing-library/react | 最新 stable | 単体テストのみ。E2E は実装しない（第 11 章） |
 | デプロイ（アプリ） | Vercel | 無料枠内での運用を想定する(req.md §73) | |
 | デプロイ（DB） | Supabase | 無料枠内での運用を想定する(req.md §73) | |
@@ -123,24 +123,24 @@ Auth.js の設定詳細と Custom JWT 生成の実装は `docs/auth-design.md`�
 
 ### 3.6 品質ゲート
 
-品質ゲートは次の 6 コマンドとする。
+品質ゲートは `make check` が実行する 4 ターゲットとする（`Makefile:94`）。
 
-| コマンド | 呼び出し口 | 内容 |
-|---|---|---|
-| `biome check` | `make fe-check`（`npm run check`） | lint / format |
-| `tsc --noEmit` | 同上 | 型検査 |
-| `knip` | 同上 | 死蔵コード検出 |
-| `next build` | `make fe-build`（`npm run build`） | ビルド検証 |
-| `vitest run` | `npm test` | 単体テスト（第 11 章） |
-| `supabase test db` | `make db-test` | pgTAP（`docs/migration-design.md` 7章） |
+```make
+check: fe-build fe-check fe-test db-test
+```
 
-`make check` が実行するのはこのうち `fe-check` と `db-test` の 2 つである（`Makefile:85`）。
-`next build` と `vitest run` はどのゲートにも含まれていない。
+| 順序 | ターゲット | 実行内容 | 対象 |
+|---|---|---|---|
+| 1 | `fe-build` | `next build` | ビルド検証 |
+| 2 | `fe-check` | `biome check && tsc --noEmit && knip` | lint / format・型検査・死蔵コード検出 |
+| 3 | `fe-test` | `vitest run` | 単体テスト（第 11 章） |
+| 4 | `db-test` | `supabase test db` | pgTAP（`docs/migration-design.md` 7章） |
 
-`tsc --noEmit` は `next build` に順序依存する。
-`src/app/layout.tsx:14` が使う `LayoutProps<"/">` は Next.js が `.next/types/routes.d.ts` へ生成するグローバル型であり、`tsconfig.json:25` の `include` がそれを拾うことで解決するためである。
-したがって `next build`（または `next dev`）を一度も実行していない作業ツリーでは `make fe-check` が `TS2304: Cannot find name 'LayoutProps'` で失敗する。
-この順序依存とゲートの欠落は Issue #40 の対象である。
+`fe-build` を先頭に置くのは、`fe-check` の `tsc --noEmit` がビルド生成物へ順序依存するためである。
+`src/app/layout.tsx:14` が使う `LayoutProps<"/">` は Next.js が `.next/types/routes.d.ts` へ生成するグローバル型であり、`tsconfig.json:25` の `include` がそれを拾うことで解決する。
+`fe-build` が先に走ってこの生成型を用意することで、`.next` が無い状態から `make check` を叩いても `tsc` が通る。
+
+この順序により `make setup` 直後や `rm -rf .next` 後でも `make check` は成立する。
 
 ---
 
@@ -267,6 +267,7 @@ src/
         restore-task.ts
         permanently-delete-task.ts
       lib/
+        define-task-action.ts       # Server Action の定型を集約する高階関数 (第 8.4 節)
         action-result.ts            # ActionResult<T> と TaskErrorCode (第 8.3 節)
         map-db-error.ts             # SQLSTATE / メッセージ → TaskErrorCode 変換 (第 8.3 節)
         queries.ts                  # RSC が呼ぶ読み取り関数 (第 8.1 節)
@@ -297,7 +298,7 @@ src/
 ```
 
 Server Actions は entity 単位（`task` feature）に集約し、UI 側の `outline` / `task-detail` / `dag` / `search` / `trash` 各 feature はこれを import して利用する。
-理由は、11 個の Action が全て `tasks` / `task_dependencies` の 2 テーブルのみを操作し、エラー変換（`map-db-error.ts`）を共通化する必要があるためである。
+理由は、11 個の Action が全て `tasks` / `task_dependencies` の 2 テーブルのみを操作し、エラー変換（`map-db-error.ts`）と定型処理（`define-task-action.ts`、第 8.4 節）を共通化する必要があるためである。
 一方で `moveTask` / `reorderTasks` は構造操作であり `outline` feature（dnd-kit・`</>`/`J`/`K` の起点）から直接呼ばれるが、実装自体は `task/actions/` に置き、呼び出し元を分けても実装を分けない。
 
 Supabase client は `req.md` §36 が定める 2 種分離をそのままディレクトリへ反映する。
@@ -981,6 +982,42 @@ SQLSTATE `ET001`〜`ET007` は migration が定める契約であり（`supabase
 `ActionResult` は失敗時に `code` と `message` しか持たない。
 `TASK_BLOCKED` の原因タスクは載らないため、必要な側（`blocking-cause.ts`）が手元の依存関係から求める（第 5.2 節）。
 
+### 8.4 Server Action の定型
+
+`req.md` §71 が Server Action の責務として挙げるのは、session 確認・DB/RPC 呼び出し・DB エラー変換・revalidation である。
+このうち DB/RPC 呼び出し以外は 11 本すべてで同じ形になるため、高階関数 `defineTaskAction`（`task/lib/define-task-action.ts`）へ集約する。
+
+```typescript
+export const completeTask = defineTaskAction<{ taskId: string }>(
+    ["/"],
+    async ({ client, userId }, { taskId }) => await client.from("tasks").update({ completed_at: new Date().toISOString() }).eq("id", taskId).eq("user_id", userId),
+);
+```
+
+`defineTaskAction` は revalidate 対象パスの配列と本体を受け取り、次を行う関数を返す。
+
+1. `getSessionUserId()` でセッションから `userId` を取得する（クライアント入力の `user_id` は信用しない。`docs/auth-design.md` §7.4）
+2. `createAppClient({ userId })` でリクエスト毎の Supabase client を生成する（第 4 章）
+3. 本体を `{ client, userId }` と引数で呼ぶ
+4. `error` があれば `mapDbErrorOrThrow` で `TaskErrorCode` へ変換し `{ ok: false, code, message }` を返す
+5. 成功時のみ対象パスへ `revalidatePath` し、`{ ok: true, data: undefined }` を返す
+
+本体は `{ error }` を持つ値を返せばよい。
+supabase-js の query builder と `rpc` の戻り値がそのまま条件を満たすため、本体は Supabase 呼び出し 1 文で書ける。
+
+revalidate 対象は操作が影響する画面で決める。
+アウトラインだけが変わる 8 本は `["/"]`、ゴミ箱の中身も変わる `softDeleteTask` / `restoreTask` / `permanentlyDeleteTask` は `["/", "/trash"]` である。
+
+11 本のうち 10 本がこの高階関数を通る。
+`createTask` だけは個別実装であり、理由は `defineTaskAction` の前提を 3 点とも満たさないことである。
+
+- DB 呼び出しが 3 つある（兄弟件数の取得・INSERT・位置指定時の `move_task`）
+- 位置調整が失敗した場合は作成自体が成功しているため、`revalidatePath` してから失敗を返す
+- 成功時に作成した `{ id }` を返す（`defineTaskAction` の戻り値は `ActionResult<void>` に固定される）
+
+`"use server"` モジュールから高階関数の戻り値を `export const` する形が Server Action として登録されることは、Next.js 16.3.0 において `.next/server/server-reference-manifest.json` を確認する実測で確かめている（11 本すべて登録され、node エントリ 13 が `main` と一致する）。
+同梱ドキュメント（`node_modules/next/dist/docs/01-app/03-api-reference/01-directives/use-server.md`）は `export async function` 形しか例示していないため、この点は文書ではなく実測に拠る。
+
 ---
 
 ## 9. dnd-kit 設計
@@ -1058,7 +1095,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 
 単体テストは vitest + @testing-library/react を用いる。
 設定は `vitest.config.mts` にあり、`environment` は jsdom、対象は `src/**/*.test.ts` と `src/**/*.test.tsx` である。
-実行は `npm test`（`vitest run`）で、`make check` には含まれない（第 3.6 節、Issue #40）。
+実行は `make fe-test`（`npm test` = `vitest run`）であり、品質ゲート `make check` の 3 段目に入る（第 3.6 節）。
 
 テストは対象と同じディレクトリに置く。
 主な対象は `lib/` 配下の純関数であり、次の 25 ファイル・273 件がある。
@@ -1149,10 +1186,8 @@ Supabase CLI は devDependency として固定せず、`Makefile:10` の `npx -y
 - **絞り込み中の dnd 並べ替えにおける rank の意味論**（第 9 章）。「dnd を無効化する」「可視の隣接兄弟を基準に rank を解決する」「現状のままステータス行へ絞り込み中である旨を出す」のいずれを採るかは Issue #42 で検討中である
 - **ポインタの水平オフセットからの depth 投影**（第 9 章）。実装しておらず、V1 で実装するかどうかも決めていない
 - **ヘルプオーバーレイに SEARCH の `Enter` を載せるか**（第 6.1 節・第 6.3 節）。テーブルへドキュメント専用エントリを足す案は Issue #47 にある
-- **品質ゲートの構成**（第 3.6 節）。`next build` と `vitest run` を `make check` へ組み込むかどうかは Issue #40 で検討中である
 - **一覧取得の上限**（第 8.1 節）。`max_rows = 1000` を超える件数への対処（ページネーション、または上限引き上げ）は決めていない
 - **モバイルのロングタップ複数選択**。閾値と視覚フィードバックの詳細を決めておらず、実装もしていない
-- **Cache / revalidate 方針の細部**。現状は全 Server Action が `revalidatePath("/")` を呼ぶが、`/trash` を含めた対象パスの粒度は詰めていない
 
 第 5 章から第 12 章までが `req.md` §74 の「今後の詳細設計項目」のうちフロントエンド側を解決している。
 認証・DB 側の項目は `docs/auth-design.md` 第 10 章と `docs/migration-design.md` 10章がそれぞれ扱う。
@@ -1188,7 +1223,7 @@ Supabase CLI は devDependency として固定せず、`Makefile:10` の `npx -y
 ---
 
 - 対象リポジトリ: dagdo
-- 対象コミット: a9b61ed
+- 対象コミット: 1a167fc
 - 作成日: 2026-08-08
 - 更新日: 2026-08-13
 - 生成者: Claude Code

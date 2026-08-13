@@ -1,7 +1,7 @@
 # dagdo Supabase マイグレーション設計書
 
 対象リポジトリ: dagdo
-対象コミット: a9b61ed
+対象コミット: 1a167fc
 作成日: 2026-08-08
 更新日: 2026-08-13
 生成者: Claude Code
@@ -133,6 +133,9 @@ supabase/
     005_cross_user_isolation.test.sql
     006_app_tasks_view.test.sql
     007_reorder_tasks.test.sql
+    008_move_task.test.sql
+    009_rls_isolation.test.sql
+    010_error_contract.test.sql
 ```
 
 `supabase/` はリポジトリ直下に置かれ、`docs/frontend-design.md` が定める `src/` 配下のアプリケーションコードのディレクトリツリーとは完全に独立している。
@@ -381,17 +384,22 @@ pgTAP は PostgreSQL の関数として実行される TAP（Test Anything Proto
 このテスト用 DB は `supabase/migrations/` を全件適用した状態から作られるため、pgTAP テストは 5章の 7 本の migration がすべて適用済みであることを前提にできる。
 `seed.sql`（6章）はテスト用 DB には適用されないため、pgTAP テストはテストファイル自身の中で必要なテストデータを `INSERT` する。
 
-現在 7 ファイル・44 件のテストケースがある。
+現在 10 ファイル・81 件のテストケースがある。
 
 | ファイル | `plan()` | 主な対象 |
 | --- | --- | --- |
-| `001_parent_cycle.test.sql` | 4 | 親子 cycle Trigger（11.1節相当） |
+| `001_parent_cycle.test.sql` | 4 | 親子 cycle Trigger（`docs/db-design.md` 第11.1節） |
 | `002_dependency_cycle.test.sql` | 4 | dependency cycle Trigger |
 | `003_blocked_completion.test.sql` | 4 | blocked completion Trigger と依存 edge 削除による解除 |
 | `004_restore.test.sql` | 5 | `restore_task` と復元後の `is_blocked` |
 | `005_cross_user_isolation.test.sql` | 4 | 複合 FK による cross-user relation の禁止 |
 | `006_app_tasks_view.test.sql` | 10 | `app_tasks` View の 3 派生値（7.4節） |
-| `007_reorder_tasks.test.sql` | 13 | `reorder_tasks` の slot 使い回しと検証（migration 7） |
+| `007_reorder_tasks.test.sql` | 13 | `reorder_tasks` の slot 使い回しと引数の検証（migration 7） |
+| `008_move_task.test.sql` | 15 | `move_task` の position ±1 シフトと拒否条件（7.5節） |
+| `009_rls_isolation.test.sql` | 14 | RLS Policy と GRANT による他ユーザー行の遮断（7.6節） |
+| `010_error_contract.test.sql` | 8 | SQLSTATE `ET001`〜`ET007` の契約（7.7節） |
+
+件数は各ファイル冒頭の `select plan(N)` の合計であり、`make db-test` の出力と一致する。
 
 ### 7.2 req.md §74 の 7 シナリオとテストファイルの対応
 
@@ -409,8 +417,9 @@ req.md §74 が重点テスト項目として挙げる 7 シナリオを、次�
 
 `001_parent_cycle.test.sql` には、シナリオ 7 の親子関係側に加えて、自己参照禁止（`tasks_not_own_parent`、req.md §37）や単純な多階層 cycle（A→B→C→A）の拒否も含める。
 
-req.md §74 が挙げていないものとして、`006_app_tasks_view.test.sql`（7.4節）と `007_reorder_tasks.test.sql` がある。
-後者は migration 7（5章）が定める slot 使い回しの並べ替えと、`p_ordered_task_ids` の検証（件数不一致・重複・他グループの ID に対する `INVALID_PARENT`）を対象とする。
+req.md §74 が挙げる 7 シナリオの外側にも 4 ファイルを置く。
+`006`（7.4節）は View の派生値、`008`（7.5節）は `move_task`、`009`（7.6節）は RLS Policy と GRANT、`010`（7.7節）は SQLSTATE の契約を対象とする。
+`007_reorder_tasks.test.sql` は migration 7（5章）が定める slot 使い回しの並べ替えと、`p_ordered_task_ids` の検証（件数不一致・重複・他グループの ID に対する `INVALID_PARENT`）を対象とする。
 
 5 と 6 について、これらは `docs/db-design.md` 第10.2章が述べる通り複合 FK（`tasks_parent_same_user_fkey`、`task_dependency_task_fkey`、`task_dependency_depends_on_fkey`）によって保証される制約である(req.md §39)。
 複合 FK は RLS の有効・無効やテスト実行ロールに関わらず常に評価されるため、`005_cross_user_isolation.test.sql` はテスト実行ロールを切り替えずに（後述 7.3節の役割切替を伴わずに）実行できる。
@@ -431,12 +440,14 @@ set local request.jwt.claims = '{"sub":"50000000-0000-0000-0000-00000000000a","r
 `next_auth.uid()` は `request.jwt.claim.sub` と `request.jwt.claims` の 2 通りを `coalesce` で試すため（`docs/auth-design.md` §4.2）、JSON 全体を `request.jwt.claims` へ入れる後者の形で解決する。
 `set local` にしているのは、pgTAP のテストがトランザクション内で実行され、終了時に自動で元へ戻るためである。
 
-`005_cross_user_isolation.test.sql:25-26` がこの 2 行をそのまま使う。
-`004_restore.test.sql:46` と `007_reorder_tasks.test.sql:63` はロールを切り替えず `request.jwt.claims` だけを設定する。
-`restore_task` / `reorder_tasks` が `SECURITY INVOKER` であり内部で `next_auth.uid()` を参照するため、RLS の行フィルタ自体を検証しない場合でもクレームの設定は要るからである。
+ロールを切り替えるのは `005_cross_user_isolation.test.sql:25-26` と `009_rls_isolation.test.sql`（7.6節）である。
+`004_restore.test.sql:46` / `007_reorder_tasks.test.sql:63` / `008_move_task.test.sql` はロールを切り替えず `request.jwt.claims` だけを設定する。
+`restore_task` / `reorder_tasks` / `move_task` が `SECURITY INVOKER` であり内部で `next_auth.uid()` を参照するため、RLS の行フィルタ自体を検証しない場合でもクレームの設定は要るからである。
+これにより、RPC 自身が持つ `user_id = next_auth.uid()` の絞り込みが RLS の有無に依らず他ユーザーの行を対象外にすることを確かめられる。
 
 7.2節で述べた通り、シナリオ 5・6（cross-user relation の禁止）そのものは複合 FK が担うため、ロール切替に依存しない。
 `005` がロールを切り替えているのは、実際のアプリ経路に近い形で検証するためである。
+RLS Policy そのものの検証は 7.6節が担う。
 
 ### 7.4 View の派生値検証テスト
 
@@ -449,6 +460,54 @@ req.md §74 が明示する 7 シナリオに加えて、`app_tasks` View（req.
 - **is_blocked**：未完了かつ未削除の依存先が存在する場合に true、依存先が完了済みまたは削除済みの場合に false になること(req.md §12, §23)
 
 これらは 3 章・5 章で述べた「派生状態を保存しない」という設計原則(req.md §75)の正しさを直接検証するテストであり、Trigger や RPC の単体テストとは別の観点として位置づける。
+
+### 7.5 move_task の検証テスト
+
+`008_move_task.test.sql` は `move_task` RPC（migration 5、`docs/db-design.md` 第12.2節）の挙動を検証する。
+
+- 同一 sibling group 内の移動で、旧 position を詰め・新 position を空ける ±1 シフトが働き、position が 0 から連番で連続したままであること
+- 親を跨ぐ移動（reparent）で、旧グループの隙間が詰まり、新グループに隙間が空くこと
+- `parent_id = NULL`（root）への移動でも、`is not distinct from` により root グループが sibling group として扱われること
+- 負の position が `INVALID_POSITION`（SQLSTATE `ET006`）で拒否されること
+- 他ユーザーのタスクを親に指定すると `INVALID_PARENT`（SQLSTATE `ET007`）で拒否されること
+
+`position` の連番連続は `docs/db-design.md` 第8.2節が定める不変条件であり、`reorder_tasks`（`007`）の slot 使い回しと `createTask` の末尾採番がこれを前提にしている。
+`move_task` の ±1 シフトはその不変条件を保つ側の実装であるため、独立した検証対象として置く。
+
+### 7.6 RLS Policy の検証テスト
+
+`009_rls_isolation.test.sql` は `authenticated` ロールとして実際に読み書きし、RLS Policy と GRANT（migration 6、`docs/db-design.md` 第10章）を検証する。
+
+- 他ユーザーの行が SELECT で 1 件も見えないこと（`tasks` / `app_tasks` / `task_dependencies`）
+- 他ユーザーの行に対する UPDATE / DELETE が 0 行で終わること（エラーにはならない）
+- 他ユーザーを `user_id` に指定した INSERT が `with check` 違反で拒否されること
+- 自分の行に対する SELECT / UPDATE / DELETE は通ること（正の対照）
+- 上記を終えたあとも、他ユーザーの行が元のまま残っていること
+
+UPDATE / DELETE が「エラーではなく 0 行」で終わることを確かめるため、影響行数を返す補助関数を用意して直接アサートする。
+Policy の `using` 句は行を見えなくするだけであり、対象外の行への UPDATE / DELETE は権限エラーにならず単に 0 行に終わるためである。
+
+本ファイルが対象とするのは Policy と GRANT そのものである。
+`005`（7.2節）が対象とする複合 FK はロール・RLS の有無に依らず成立する制約であり、両者は別の防御層を見ている（`docs/db-design.md` 第10.2章）。
+
+### 7.7 SQLSTATE エラー契約の検証テスト
+
+`010_error_contract.test.sql` は SQLSTATE `ET001`〜`ET007` の割り当てを `throws_ok` で固定する。
+割り当ての宣言元は `supabase/migrations/20260808000004_triggers.sql:8-15` の冒頭コメントであり、本ファイルはその表と 1 対 1 で対応する（`docs/db-design.md` 第14.1節）。
+
+| SQLSTATE | TaskErrorCode | 発生元 |
+| --- | --- | --- |
+| `ET001` | `TASK_NOT_FOUND` | RPC（`move_task` ほか） |
+| `ET002` | `TASK_PARENT_CYCLE` | Trigger `check_task_parent_cycle` |
+| `ET003` | `TASK_DEPENDENCY_CYCLE` | Trigger `check_task_dependency_cycle` |
+| `ET004` | `TASK_BLOCKED` | Trigger `check_task_blocked_completion` |
+| `ET005` | `DEPENDENCY_ALREADY_EXISTS` | RPC `add_task_dependency` |
+| `ET006` | `INVALID_POSITION` | RPC `move_task` |
+| `ET007` | `INVALID_PARENT` | RPC `move_task` / `reorder_tasks` |
+
+コード単位で 1 ファイルへ集約するのは、`src/features/task/lib/map-db-error.ts` が SQLSTATE を最優先で判定する契約（`docs/frontend-design.md` §8.3）に対応させるためである。
+`001`〜`008` は req.md のシナリオ単位で組まれておりエラーコード単位では並ばないため、契約表そのものの写しは宣言元と対応する本ファイルが持つ。
+各エラーが「どのシナリオで起きるか」と「メッセージ前置詞は何か」は `001`〜`008` が引き続き担う。
 
 ---
 
@@ -496,7 +555,6 @@ hosted プロジェクトの作成・`supabase link` に必要な認証情報の
 
 - **CI/CD 化**：9章の手動 `supabase db push` 運用を CI 経由の自動反映へ移行するかどうかは決めていない。移行する場合、pgTAP テスト（7章）を CI のゲートに含めるかどうかも合わせて検討する
 - **backup 方針**：hosted Supabase プロジェクトのバックアップ取得・復元方針は決めていない
-- **RLS Policy 自体の網羅的なテスト**：7.3節のロール切替の書き方は確立しているが、SELECT / INSERT / UPDATE / DELETE それぞれの条件（req.md §41〜43）を直接検証するテストは書いていない。現状の `005` は複合 FK による分離の検証にとどまる
 - **`max_rows` の扱い**：`config.toml:18` の `max_rows = 1000` を引き上げるかどうかは決めていない（`docs/db-design.md` 第15.2節）
 
 次の項目は本文書の姉妹文書が解決している。
@@ -538,7 +596,7 @@ hosted プロジェクトの作成・`supabase link` に必要な認証情報の
 ---
 
 対象リポジトリ: dagdo
-対象コミット: a9b61ed
+対象コミット: 1a167fc
 作成日: 2026-08-08
 更新日: 2026-08-13
 生成者: Claude Code
