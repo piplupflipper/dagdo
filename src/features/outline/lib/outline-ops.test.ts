@@ -253,6 +253,53 @@ describe("applyOutlineOp: reorder/move の位置詰め", () => {
     });
 });
 
+/**
+ * `softDelete` の undo (`u`) は `[restore, move]` の 2 Op 列である (invert-op.ts の `softDelete` 分岐)
+ *
+ * サーバー側の `restore_task` RPC は復元対象を actual sibling group の末尾へ移し (req.md §26)、
+ * かつ対象が空けた穴を詰める (migration 20260813000001、Issue #23)。
+ * 続く `move_task` が削除前の parent_id/position へ戻すため、DB は削除前の並びへ完全に収束する
+ * (supabase/tests/011_position_gaps.test.sql のケース8 が固定)。
+ * ここでは楽観適用側 (`applyOutlineOp`) が同じ結果へ収束することを確かめる
+ */
+describe("applyOutlineOp: softDelete の undo (restore + move) が削除前の並びへ戻る", () => {
+    const positionsOf = (tasks: readonly AppTask[]): string[] => [...tasks].sort((x, y) => x.position - y.position).map((t) => `${t.id}:${t.position}`);
+
+    it("softDelete は行を除去するだけで、残る兄弟の position を詰めない (DB の論理削除と同じ)", () => {
+        const before = [task({ id: "a", position: 0 }), task({ id: "b", position: 1 }), task({ id: "c", position: 2 })];
+        const afterDelete = applyOutlineOp(before, [], { type: "softDelete", taskId: "b" });
+        expect(positionsOf(afterDelete)).toEqual(["a:0", "c:2"]);
+    });
+
+    it("[restore, move] の 2 Op を通すと position が削除前と一致する", () => {
+        const before = [task({ id: "a", position: 0 }), task({ id: "b", position: 1 }), task({ id: "c", position: 2 })];
+        // invert-op.ts が渡す snapshot は「削除を適用する直前」の行そのもの
+        const snapshot = before[1] as AppTask;
+        const afterDelete = applyOutlineOp(before, [], { type: "softDelete", taskId: "b" });
+        const afterRestore = applyOutlineOp(afterDelete, [], { type: "restore", taskId: "b", snapshot });
+        const afterMove = applyOutlineOp(afterRestore, [], { type: "move", taskId: "b", newParentId: snapshot.parent_id, newPosition: snapshot.position });
+        expect(positionsOf(afterMove)).toEqual(["a:0", "b:1", "c:2"]);
+    });
+
+    it("末尾を削除して undo しても position が削除前と一致する", () => {
+        const before = [task({ id: "a", position: 0 }), task({ id: "b", position: 1 }), task({ id: "c", position: 2 })];
+        const snapshot = before[2] as AppTask;
+        const afterDelete = applyOutlineOp(before, [], { type: "softDelete", taskId: "c" });
+        const afterRestore = applyOutlineOp(afterDelete, [], { type: "restore", taskId: "c", snapshot });
+        const afterMove = applyOutlineOp(afterRestore, [], { type: "move", taskId: "c", newParentId: snapshot.parent_id, newPosition: snapshot.position });
+        expect(positionsOf(afterMove)).toEqual(["a:0", "b:1", "c:2"]);
+    });
+
+    it("子グループの中間を削除して undo しても position が削除前と一致する", () => {
+        const before = [task({ id: "p", position: 0 }), task({ id: "a", parentId: "p", position: 0 }), task({ id: "b", parentId: "p", position: 1 }), task({ id: "c", parentId: "p", position: 2 })];
+        const snapshot = before[2] as AppTask;
+        const afterDelete = applyOutlineOp(before, [], { type: "softDelete", taskId: "b" });
+        const afterRestore = applyOutlineOp(afterDelete, [], { type: "restore", taskId: "b", snapshot });
+        const afterMove = applyOutlineOp(afterRestore, [], { type: "move", taskId: "b", newParentId: snapshot.parent_id, newPosition: snapshot.position });
+        expect(positionsOf(afterMove.filter((t) => t.parent_id === "p"))).toEqual(["a:0", "b:1", "c:2"]);
+    });
+});
+
 describe("resolveReorderedSiblingIds", () => {
     it("対象を現在の rank から抜いて、新しい rank へ挿し直した順序を返す", () => {
         const tasks = [task({ id: "a", position: 0 }), task({ id: "b", position: 1 }), task({ id: "c", position: 2 })];
