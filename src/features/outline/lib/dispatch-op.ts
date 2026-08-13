@@ -11,10 +11,11 @@ import type { ActionResult } from "@/features/task/lib/action-result";
 import type { AppTask } from "@/types/task";
 
 /**
- * Op を対応する Server Action へ振り分ける (undo/redo の再実行、docs/frontend-design.md §5.2)
+ * Op を対応する Server Action へ振り分ける (docs/frontend-design.md §5.2)
  *
- * 通常のハンドラ (runComplete 等) は Op の種類ごとに専用の逆操作の組み立てとセットで書くが、
- * undo/redo は「確定済みの任意の Op 列」を汎用に再実行する必要があるため、ここに 1 箇所へ集約する。
+ * 通常操作 (outline-shell.tsx の `runOp`) と undo/redo の再実行 (同 `runOpsForHistory`) が
+ * ともにここを通る。Op を実行する経路をこの 1 本に絞ることで、Op 種別を足したときに
+ * 片方の経路だけ直し忘れる事故を防ぐ (Issue #32)。
  * `reorder` だけ、Server Action (`reorderTasks`) が要求する `{ parentId, orderedTaskIds }` を
  * `newPosition` (rank) から再構成するために `tasksSnapshot` (dispatch 時点の optimisticTasks) を要る
  */

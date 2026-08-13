@@ -22,6 +22,7 @@ import {
     type SiblingReorderResult,
 } from "@/features/outline/lib/flatten-for-dnd";
 import type { InlineTitleCaret, InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
+import { invertOutlineOp } from "@/features/outline/lib/invert-op";
 import { applyOutlineOp, type OutlineOp } from "@/features/outline/lib/outline-ops";
 import { DEFAULT_LEFT_PANE_RATIO, PANE_RATIO_STORAGE_KEY, parseStoredPaneRatio } from "@/features/outline/lib/pane-ratio";
 import {
@@ -33,17 +34,13 @@ import {
     resolveRenamedLookup,
     takePendingTitle,
 } from "@/features/outline/lib/pending-create-registry";
-import { siblingRankOf } from "@/features/outline/lib/sibling-rank";
 import { EMPTY_UNDO_HISTORY, popRedoEntry, popUndoEntry, pushToRedo, pushToUndo, recordEntry, type UndoHistoryState } from "@/features/outline/lib/undo-history";
 import { SearchOverlay } from "@/features/search/components/search-overlay";
 import { filterTasks } from "@/features/search/lib/filter-tasks";
 import { completeTask } from "@/features/task/actions/complete-task";
 import { createTask } from "@/features/task/actions/create-task";
-import { moveTask } from "@/features/task/actions/move-task";
-import { reopenTask } from "@/features/task/actions/reopen-task";
-import { reorderTasks } from "@/features/task/actions/reorder-tasks";
-import { softDeleteTask } from "@/features/task/actions/soft-delete-task";
 import { updateTask } from "@/features/task/actions/update-task";
+import type { ActionResult } from "@/features/task/lib/action-result";
 import { DetailPane, type DetailPaneHandle } from "@/features/task-detail/components/detail-pane";
 import { MobileDetailSheet } from "@/features/task-detail/components/mobile-detail-sheet";
 import { useOutlineStore } from "@/store/outline-store";
@@ -217,27 +214,58 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         setUndoHistory((previous) => recordEntry(previous, { label, undoOps, redoOps }));
     };
 
+    /**
+     * 1 Op を実行する唯一の経路 (楽観適用 → Server Action → ステータス行 → undo 履歴、docs/frontend-design.md §5.2)
+     *
+     * 通常操作 (`x` / `J` / `>` / `dd` / タイトル・説明・期日の確定 / dnd のドロップ) はこの関数を通り、
+     * undo/redo (`u` / `U`) は Op 列を順に流す `runOpsForHistory` を通る。どちらも Op から Server Action への
+     * 振り分けを `callServerForOp` (lib/dispatch-op.ts) 1 箇所へ集約しており、Op 種別を足すときに
+     * 片方だけ直す事故が起きないようにしてある (Issue #32)。
+     *
+     * 履歴に積む Op 列はここで導く。`redoOps` は元の操作そのもの (`[op]`、undo-history.ts の `UndoEntry` 参照)、
+     * `undoOps` は `invertOutlineOp` (lib/invert-op.ts) が Op と実行前のスナップショットから組み立てる。
+     * 逆操作を組み立てられない Op (対象行が手元に無い、`create` / `restore`) は履歴を積めないため、
+     * 楽観適用も Server Action も行わずに何もしない。統合前も各ハンドラが同じ条件で早期 return しており、
+     * 現状この分岐へ到達する呼び出しは無い (呼び出し側が逆操作の材料の有無を先に確かめている)。
+     *
+     * `onError` は骨格から外れるエラー処理の逃がし口である。ステータス行へ出す文言を返せばそれを使い、
+     * `undefined` を返せば既定の `formatActionError` に委ねる。文言の差し替え以外の副作用 (原因タスクの点滅など) も
+     * この中で行う。使うのは `runComplete` の `TASK_BLOCKED` 分岐だけである
+     */
+    const runOp = (op: OutlineOp, label: string, onError?: (result: Extract<ActionResult, { ok: false }>) => string | undefined): void => {
+        // 逆操作の材料も `reorder` の `orderedTaskIds` の再構成も、楽観適用より前の一覧から取る
+        const tasksSnapshot = optimisticTasks;
+        const undoOps = invertOutlineOp(op, tasksSnapshot);
+        if (undoOps === null) {
+            return;
+        }
+        startTransition(async () => {
+            applyOptimisticAction(op);
+            const result = await callServerForOp(op, tasksSnapshot);
+            if (!result.ok) {
+                setStatusError(onError?.(result) ?? formatActionError(result));
+                return;
+            }
+            setStatusError(null);
+            pushHistory(label, undoOps, [op]);
+        });
+    };
+
     const runComplete = (taskId: string): void => {
         if (isPendingTaskId(taskId)) {
             return;
         }
-        startTransition(async () => {
-            applyOptimisticAction({ type: "complete", taskId });
-            const result = await completeTask({ taskId });
-            if (!result.ok) {
-                if (result.code === "TASK_BLOCKED") {
-                    const cause = findBlockingCause(taskId, tasksById, dependencies);
-                    if (cause !== null) {
-                        flashTask(cause.id);
-                    }
-                    setStatusError(formatTaskError("TASK_BLOCKED", `${cause?.title ?? "依存先"} が未完了のため完了できません`));
-                    return;
-                }
-                setStatusError(formatActionError(result));
-                return;
+        // 依存先が未完了で弾かれた場合だけ、Server Action の英語 message ではなく原因タスク名を含む文言を出し、
+        // その原因タスクを DAG パネルで点滅させる (findBlockingCause は手元の依存関係から原因を 1 件だけ求める)
+        runOp({ type: "complete", taskId }, "完了", (result) => {
+            if (result.code !== "TASK_BLOCKED") {
+                return undefined;
             }
-            setStatusError(null);
-            pushHistory("完了", [{ type: "reopen", taskId }], [{ type: "complete", taskId }]);
+            const cause = findBlockingCause(taskId, tasksById, dependencies);
+            if (cause !== null) {
+                flashTask(cause.id);
+            }
+            return formatTaskError("TASK_BLOCKED", `${cause?.title ?? "依存先"} が未完了のため完了できません`);
         });
     };
 
@@ -245,16 +273,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         if (isPendingTaskId(taskId)) {
             return;
         }
-        startTransition(async () => {
-            applyOptimisticAction({ type: "reopen", taskId });
-            const result = await reopenTask({ taskId });
-            if (!result.ok) {
-                setStatusError(formatActionError(result));
-                return;
-            }
-            setStatusError(null);
-            pushHistory("再オープン", [{ type: "complete", taskId }], [{ type: "reopen", taskId }]);
-        });
+        runOp({ type: "reopen", taskId }, "再オープン");
     };
 
     const handleToggleDone = (task: AppTask): void => {
@@ -399,24 +418,14 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         if (task === undefined || task.title === title) {
             return;
         }
-        const previousTitle = task.title;
-        startTransition(async () => {
-            applyOptimisticAction({ type: "updateTitle", taskId, title });
-            const result = await updateTask({ taskId, title });
-            if (!result.ok) {
-                setStatusError(formatActionError(result));
-                return;
-            }
-            setStatusError(null);
-            pushHistory("タイトル変更", [{ type: "updateTitle", taskId, title: previousTitle }], [{ type: "updateTitle", taskId, title }]);
-        });
+        runOp({ type: "updateTitle", taskId, title }, "タイトル変更");
     };
 
     /**
-     * DetailPane の説明編集の確定 (改修 3、docs/frontend-design.md §5.2, §6.5)
+     * DetailPane の説明編集の確定 (docs/frontend-design.md §5.2, §6.5)
      *
-     * `commitInlineTitleEdit` と同じ形 (楽観適用 → `updateTask` → 失敗時 `setStatusError` → 成功時 `pushHistory`)。
-     * 確定した瞬間に `applyOptimisticAction` で即時反映されるため、`updateTask` の応答を待たずに
+     * `commitInlineTitleEdit` と同じ形 (値が変わっていなければ何もせず、変わっていれば `runOp` へ渡す)。
+     * 確定した瞬間に `applyOptimisticAction` で即時反映されるため、Server Action の応答を待たずに
      * 呼び出し元 (DetailPane) は編集領域を畳んでよい。「保存中」のブロッキング表示はここでは行わない
      */
     const commitDescriptionEdit = (taskId: string, description: string): void => {
@@ -427,20 +436,10 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         if (task === undefined || task.description === description) {
             return;
         }
-        const previousDescription = task.description;
-        startTransition(async () => {
-            applyOptimisticAction({ type: "updateDescription", taskId, description });
-            const result = await updateTask({ taskId, description });
-            if (!result.ok) {
-                setStatusError(formatActionError(result));
-                return;
-            }
-            setStatusError(null);
-            pushHistory("説明変更", [{ type: "updateDescription", taskId, description: previousDescription }], [{ type: "updateDescription", taskId, description }]);
-        });
+        runOp({ type: "updateDescription", taskId, description }, "説明変更");
     };
 
-    /** DetailPane の期日編集の確定 (改修 3)。commitDescriptionEdit と同じ形 */
+    /** DetailPane の期日編集の確定。commitDescriptionEdit と同じ形 */
     const commitDueDateEdit = (taskId: string, dueDate: string | null): void => {
         if (isPendingTaskId(taskId)) {
             return;
@@ -449,17 +448,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         if (task === undefined || task.due_date === dueDate) {
             return;
         }
-        const previousDueDate = task.due_date;
-        startTransition(async () => {
-            applyOptimisticAction({ type: "updateDueDate", taskId, dueDate });
-            const result = await updateTask({ taskId, dueDate });
-            if (!result.ok) {
-                setStatusError(formatActionError(result));
-                return;
-            }
-            setStatusError(null);
-            pushHistory("期日変更", [{ type: "updateDueDate", taskId, dueDate: previousDueDate }], [{ type: "updateDueDate", taskId, dueDate }]);
-        });
+        runOp({ type: "updateDueDate", taskId, dueDate }, "期日変更");
     };
 
     const focusDetailEditor = (): void => {
@@ -507,18 +496,10 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         if (result === null) {
             return;
         }
-        const previousRank = siblingRankOf(optimisticTasks, taskId);
+        // `reorder` Op が持つのは兄弟内の rank だけである。Server Action へ渡す `orderedTaskIds` は
+        // `callServerForOp` が同じ rank から再構成する (outline-ops.ts の resolveReorderedSiblingIds)
         const newRank = result.orderedTaskIds.indexOf(taskId);
-        startTransition(async () => {
-            applyOptimisticAction({ type: "reorder", taskId, newPosition: newRank });
-            const actionResult = await reorderTasks(result);
-            if (!actionResult.ok) {
-                setStatusError(formatActionError(actionResult));
-                return;
-            }
-            setStatusError(null);
-            pushHistory(direction === "down" ? "下へ移動" : "上へ移動", [{ type: "reorder", taskId, newPosition: previousRank }], [{ type: "reorder", taskId, newPosition: newRank }]);
-        });
+        runOp({ type: "reorder", taskId, newPosition: newRank }, direction === "down" ? "下へ移動" : "上へ移動");
     };
 
     const indentCursor = (): void => {
@@ -526,25 +507,11 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
             return;
         }
         const taskId = cursorTaskId;
-        const previous = tasksById.get(taskId);
         const result: ReparentResult | null = computeIndent({ tasks: optimisticTasks, taskId });
-        if (result === null || previous === undefined) {
+        if (result === null) {
             return;
         }
-        startTransition(async () => {
-            applyOptimisticAction({ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition });
-            const actionResult = await moveTask({ taskId, newParentId: result.newParentId, newPosition: result.newPosition });
-            if (!actionResult.ok) {
-                setStatusError(formatActionError(actionResult));
-                return;
-            }
-            setStatusError(null);
-            pushHistory(
-                "インデント",
-                [{ type: "move", taskId, newParentId: previous.parent_id, newPosition: previous.position }],
-                [{ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition }],
-            );
-        });
+        runOp({ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition }, "インデント");
     };
 
     const outdentCursor = (): void => {
@@ -552,25 +519,11 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
             return;
         }
         const taskId = cursorTaskId;
-        const previous = tasksById.get(taskId);
         const result: ReparentResult | null = computeOutdent({ tasks: optimisticTasks, taskId });
-        if (result === null || previous === undefined) {
+        if (result === null) {
             return;
         }
-        startTransition(async () => {
-            applyOptimisticAction({ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition });
-            const actionResult = await moveTask({ taskId, newParentId: result.newParentId, newPosition: result.newPosition });
-            if (!actionResult.ok) {
-                setStatusError(formatActionError(actionResult));
-                return;
-            }
-            setStatusError(null);
-            pushHistory(
-                "アウトデント",
-                [{ type: "move", taskId, newParentId: previous.parent_id, newPosition: previous.position }],
-                [{ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition }],
-            );
-        });
+        runOp({ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition }, "アウトデント");
     };
 
     /**
@@ -584,33 +537,13 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
      * ときに no-op になる (applyOutlineOp の隙間詰め/隙間空けが互いに打ち消す) ため、
      * ローカル表示は restore 直後の snapshot 位置のまま変わらず、末尾へ飛んで見えることはない。
      * サーバー側だけ tail → 元の位置へ move_task RPC で正しく収束する
+     * (この 2 Op 列の組み立ては lib/invert-op.ts の `softDelete` 分岐が持つ)
      */
     const softDeleteCursor = (): void => {
         if (cursorTaskId === null || isPendingTaskId(cursorTaskId)) {
             return;
         }
-        const taskId = cursorTaskId;
-        const snapshot = tasksById.get(taskId);
-        if (snapshot === undefined) {
-            return;
-        }
-        startTransition(async () => {
-            applyOptimisticAction({ type: "softDelete", taskId });
-            const actionResult = await softDeleteTask({ taskId });
-            if (!actionResult.ok) {
-                setStatusError(formatActionError(actionResult));
-                return;
-            }
-            setStatusError(null);
-            pushHistory(
-                "ゴミ箱へ移動",
-                [
-                    { type: "restore", taskId, snapshot },
-                    { type: "move", taskId, newParentId: snapshot.parent_id, newPosition: snapshot.position },
-                ],
-                [{ type: "softDelete", taskId }],
-            );
-        });
+        runOp({ type: "softDelete", taskId: cursorTaskId }, "ゴミ箱へ移動");
     };
 
     /** dnd-kit のドロップ確定 (同一 actual parent 内)。キーボード代替の `moveCursorSibling` と同じ `reorder` Op を使う */
@@ -618,18 +551,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         if (isPendingTaskId(taskId)) {
             return;
         }
-        const previousRank = siblingRankOf(optimisticTasks, taskId);
-        const newRank = result.orderedTaskIds.indexOf(taskId);
-        startTransition(async () => {
-            applyOptimisticAction({ type: "reorder", taskId, newPosition: newRank });
-            const actionResult = await reorderTasks(result);
-            if (!actionResult.ok) {
-                setStatusError(formatActionError(actionResult));
-                return;
-            }
-            setStatusError(null);
-            pushHistory("並べ替え", [{ type: "reorder", taskId, newPosition: previousRank }], [{ type: "reorder", taskId, newPosition: newRank }]);
-        });
+        runOp({ type: "reorder", taskId, newPosition: result.orderedTaskIds.indexOf(taskId) }, "並べ替え");
     };
 
     /** dnd-kit のドロップ確定 (actual parent が変わる)。キーボード代替の indent/outdent と同じ `move` Op を使う */
@@ -637,24 +559,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         if (isPendingTaskId(taskId)) {
             return;
         }
-        const previous = tasksById.get(taskId);
-        if (previous === undefined) {
-            return;
-        }
-        startTransition(async () => {
-            applyOptimisticAction({ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition });
-            const actionResult = await moveTask({ taskId, newParentId: result.newParentId, newPosition: result.newPosition });
-            if (!actionResult.ok) {
-                setStatusError(formatActionError(actionResult));
-                return;
-            }
-            setStatusError(null);
-            pushHistory(
-                "親を変更",
-                [{ type: "move", taskId, newParentId: previous.parent_id, newPosition: previous.position }],
-                [{ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition }],
-            );
-        });
+        runOp({ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition }, "親を変更");
     };
 
     /**
