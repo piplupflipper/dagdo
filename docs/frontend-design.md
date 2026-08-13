@@ -1,7 +1,7 @@
 # dagdo フロントエンド技術設計書
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 1a167fc
+- 対象コミット: 2591b2f
 - 作成日: 2026-08-08
 - 更新日: 2026-08-13
 - 生成者: Claude Code
@@ -409,7 +409,7 @@ type OutlineActions = {
 | SEARCH | `Esc` | NORMAL | `searchQuery` を空文字に戻しオーバーレイを閉じる（`cancelSearch`）。絞り込みはここで解除される |
 
 `confirmSearch` が `searchQuery` を消さないため、「`/` で検索 → `Enter` で確定 → そのまま NORMAL の操作」という流れでは絞り込みが残ったままになる。
-この状態での dnd 並べ替えには rank の意味論の問題が残る（第 9 章、Issue #42）。
+絞り込みが残っている間の dnd 並べ替えも、挿入位置は可視行ではなく全兄弟を基準に決まる（第 9 章）。
 
 モード遷移とタスクデータの読み書きは明確に分離する。
 モード遷移はストア内で完結する同期的な状態更新であり、DB へのアクセスを伴わない。
@@ -566,7 +566,7 @@ settle 後に実 id で通常のパイプライン（楽観適用 → `updateTas
 
 実装は宣言的テーブル `features/outline/lib/keymap-table.ts` である（第 6.2 節）。
 本節の各表はそのエントリと対応する。
-ただし SEARCH モードの一部はテーブルの外にあり、その扱いは SEARCH の表の直後で述べる。
+ただし SEARCH モードの一部はエントリに `run` を持たず、その扱いは SEARCH の表の直後で述べる。
 
 NORMAL モード。
 
@@ -617,21 +617,18 @@ VISUAL モード。
 | `Esc` | NORMAL へ戻る | 選択を解除 |
 
 SEARCH モード。
+3 つとも `keymap-table.ts` に登録がある。
 
 | キー | 動作 | テーブル登録 | 備考 |
 |---|---|---|---|
-| 文字入力 | クエリ更新 | なし | IME 変換確定前は `isComposing` を見て無視する |
-| `Enter` | クエリを保持したまま NORMAL へ戻る | なし | 絞り込みは解除されない（第 5.1 節の `confirmSearch`） |
-| `Escape` | クエリを破棄して NORMAL へ戻る | あり | `cancelSearch` |
+| 文字入力 | クエリ更新 | ドキュメント専用エントリ（`run` なし） | テーブル上の `keys` は `{char}` である（第 6.2 節）。実処理は `SearchOverlay` の入力欄が行う。IME 変換確定前は `isComposing` を見て無視する |
+| `Enter` | クエリを確定し、絞り込みを残したまま NORMAL へ戻る | ドキュメント専用エントリ（`run` なし） | 実処理は `SearchOverlay` の入力欄が行う。絞り込みは解除されない（第 5.1 節の `confirmSearch`） |
+| `Escape` | クエリを破棄して NORMAL へ戻る | `run` あり | `cancelSearch` |
 
-SEARCH の文字入力と `Enter` は `keymap-table.ts` に登録がなく、`SearchOverlay` の入力欄のローカル `onKeyDown` が処理する。
-入力欄がフォーカスを持つ間は `isEditableTarget`（第 6.2 節）が dispatcher の手前で return するため、テーブルへ載せても dispatcher は到達しない。
-テーブルに登録があるのは `Escape` だけであり、これはフォーカスが入力欄から外れた想定外の状態への保険である。
-
-この結果、ヘルプオーバーレイ（第 6.3 節）は SEARCH の `Enter` と文字入力を表示しない。
-ヘルプの表示内容はテーブルから導くためである。
-テーブルには `run` を持たないドキュメント専用エントリという仕組みがあり（第 6.2 節）、NORMAL の行内編集の `Enter` / `Escape` はそれで登録されているのに対し、SEARCH では使われていない。
-この不整合は Issue #47 の対象である。
+SEARCH の文字入力と `Enter` の実処理は `SearchOverlay` の入力欄が担う。
+入力欄がフォーカスを持つ間は `isEditableTarget`（第 6.2 節）が dispatcher の手前で return するため、テーブルへ `run` を持たせても dispatcher は到達しない。
+そのため両者は `run` を持たないドキュメント専用エントリ（第 6.2 節）として登録し、ヘルプオーバーレイ（第 6.3 節）への掲載だけを担わせる。
+`Escape` だけが `run` を持ち、これはフォーカスが入力欄から外れた想定外の状態への保険である。
 
 ### 6.2 イベント処理方式
 
@@ -666,14 +663,15 @@ dispatcher はこのテーブルから構築した trie だけを読み、ヘル
 dispatcher が処理するキーはテーブルにあるものだけである。
 
 ただし逆は成り立たない。
-入力欄にフォーカスがある間は dispatcher 自体が動かないため、そこで効くキーはテーブルに無くても機能する。
-SEARCH の文字入力と `Enter` が実際にそうなっている（第 6.1 節）。
+テーブルにあるキーが必ず dispatcher に届くわけではない。
+入力欄にフォーカスがある間は dispatcher 自体が動かないため、そこで効くキーは入力欄のローカルハンドラが処理する。
+SEARCH の文字入力と `Enter`（第 6.1 節）、行内編集中の `Enter` / `Escape`（第 6.4 節）が実際にそうなっており、いずれもテーブルへは `run` を持たないエントリとして登録する。
 
 ```typescript
 type KeymapEntry = {
     keys: string; // スペース区切りのキーシーケンス表現（"j" / "g g" / "z a" / "C-d"）
     mode: OutlineMode;
-    category: KeymapCategory; // ヘルプでのグルーピング用（移動 / 編集 / 行内編集 / 構造変更 / 折りたたみ / モード / ヘルプ）
+    category: KeymapCategory; // ヘルプでのグルーピング用（移動 / 編集 / 行内編集 / 構造変更 / 折りたたみ / 絞り込み / モード / ヘルプ）
     description: string; // ヘルプ表示用の説明
     run?: (context: KeymapContext) => void; // 省略時はヘルプにのみ表示する
 };
@@ -682,7 +680,8 @@ type KeymapEntry = {
 `keys` の区切りをスペースにしているのは、`<` `>` のように単体でキーが割り当てられている文字をエスケープなしで書けるようにするため。
 修飾キーは基底キーの前へ `C-`（Control）/ `A-`（Alt）/ `M-`（Meta）を付ける。
 Shift は接頭辞にしない（`J` や `<` のように `event.key` へ既に反映されているため）。
-`run` を任意にしているのは、行内編集中の `Esc` / `Enter` のように「コンポーネント側のローカルハンドラが処理するが、ヘルプには載せたいキー」を同じテーブルへ含めるためである。
+`run` を任意にしているのは、「コンポーネント側のローカルハンドラが処理するが、ヘルプには載せたいキー」を同じテーブルへ含めるためである。
+該当するのは行内編集中の `Esc` / `Enter`（第 6.4 節）と、SEARCH の文字入力 / `Enter`（第 6.1 節）である。
 
 `run` を持たないエントリ（ドキュメント専用エントリ）は trie に載せない。
 dispatcher が読むのは `dispatchableKeymap`（`outlineKeymap` から `run` を持つものだけを抜いた派生）である。
@@ -690,6 +689,9 @@ dispatcher が読むのは `dispatchableKeymap`（`outlineKeymap` から `run` �
 NORMAL の `Enter` は、行にフォーカスがあるときは `DetailPane` へ移り（第 6.1 節）、行内編集中は編集を確定する（第 6.4 節）。
 前者だけが dispatcher の担当であり、後者は input のローカルハンドラが処理する。
 文脈の違いは `category` が表すため、ヘルプ側の識別子（React の `key`）も `mode` + `category` + `keys` とする。
+
+SEARCH の文字入力の `keys` に置く `{char}` は、`event.key` に対応するキー名ではなく「特定のキーに割り当てられていない打鍵」を表すプレースホルダのトークンであり、ドキュメント専用エントリでのみ使う。
+trie に載らないため、dispatcher が押下キーを変換する `keyEventToToken`（`features/outline/lib/key-sequence.ts`）の出力と衝突することはない。
 
 `gg` と `dd` と `z` で始まる各キー（`za` / `zo` / `zc` / `zR` / `zM`、いずれも第 6.1 節）は、1 回の `keydown` だけでは確定可否を判定できない。
 これらはテーブルの `keys` から構築した prefix tree（trie）で扱う。
@@ -716,9 +718,15 @@ trie の構築（`buildKeymapTries`）と 1 打鍵ぶんの待機状態遷移（
 変換は `features/outline/lib/keymap-help.ts` の `buildKeymapHelpSections` に純粋関数として置き、表示は `features/outline/components/keymap-help-overlay.tsx` が担う。
 `keys` は `parseKeySequence`（第 6.2 節）でトークンへ分解し、1 トークン = 1 つの `kbd` として描画する。
 `run` を持たないエントリも表示対象に含める（`run` を任意にしている目的がヘルプへの掲載であるため）。
+掲載されるドキュメント専用エントリは、NORMAL の行内編集の `Enter` / `Escape`（第 6.4 節）と、SEARCH の文字入力 / `Enter`（第 6.1 節）である。
 
-テーブルに無いキーはヘルプに現れない。
-SEARCH の文字入力と `Enter` がこれに当たり、ヘルプの SEARCH セクションには `Escape` だけが並ぶ（第 6.1 節、Issue #47）。
+`kbd` のラベルは `formatKeyToken` が読み替える。
+`Escape` は `Esc` へ、`{char}` は `文字` へ変える。
+`event.key` 由来の長い名前を狭い `kbd` へ収め、キー名でないプレースホルダのトークン（第 6.2 節）を読み下せる表記にするためである。
+
+SEARCH の文字入力には `絞り込み` カテゴリを充てる。
+モード遷移ではないため `モード` へは置けない。
+SEARCH の `Enter` / `Escape` は NORMAL へ戻る操作なので `モード` に属するのに対し、文字入力は SEARCH に留まったまま `searchQuery` を更新するだけである（第 5.1 節）。
 
 開閉状態は `OutlineShell` のローカル state が持ち、`OutlineMode` にモードを追加しない。
 モードを増やすと store・dispatcher・StatusLine の全体に状態機械が波及するのに対し、ヘルプは裏の状態を一切変えない一時的な表示にすぎないためである。
@@ -1028,30 +1036,35 @@ revalidate 対象は操作が影響する画面で決める。
 
 ドロップ確定（`outline-pane.tsx` の `handleDragEnd`）は次の順に進む。
 
-1. ドロップ先の行（`over`）から、その行の `parentId` を得る
-2. 同じ `parentId` を持つ可視行の ID 配列を組み、`arrayMove` でドラッグ対象を挿入位置へ移した希望順序を作る
-3. `computeDropResult` に「ドロップ先 parent」と希望順序を渡し、actual parent が変わるかどうかで結果の種類を分ける
+1. ドロップ先の行（`over`）が可視行であることを確かめ、その行の `parentId` を得る
+2. `computeDropResult` へ `{ tasks, taskId, targetParentId, overTaskId }` を渡す
+3. actual parent が変わるかどうかで結果の種類を分ける
 4. `parent` が変わらなければ `onReorder`（`reorder` Op）、変われば `onReparent`（`move` Op）を呼ぶ
+
+`flattenForDnd` の結果を引くのは 1 のためだけである。
+
+**ドロップ確定時の挿入位置は「全兄弟」基準である。**
+`computeDropResult` は `tasks` の同一 `parent_id` を `position` 昇順に並べたものを基準に取り、ドロップ先の行の直前（上へのドラッグ）または直後（下へのドラッグ）へ対象を挿し込む。
+可視行（`flattenForDnd(visibleRows)`）を基準にしてはならない。
+絞り込み中は可視行からクエリに合わない兄弟が欠けるのに対し、`reorder` Op の rank を並びへ戻す `resolveReorderedSiblingIds`（第 5.2 節）は全兄弟へ適用するためである。
+基準が食い違うと、見えていない兄弟を飛び越えた位置へ挿し込まれる。
+折りたたみは兄弟グループごと隠れるため、この食い違いを生まない（`deriveVisibleRows` は折りたたんだ行より深い行をまとめて落とす）。
+
+**`computeDropResult` の入力は `{ tasks, taskId, targetParentId, overTaskId }` である。**
+ドロップ後の希望順序を呼び出し側が組み立てて渡す形は採らない。
+可視行由来の並びを渡せてしまい、上の基準を関数の外側から破れるためである。
+
+`targetParentId` を `overTaskId` と別引数にしているのは、将来ポインタの水平オフセットから depth を投影するときに、「親はポインタ位置から、挿入位置はドロップ先の行から」を別々に決められるようにするためである。
 
 `reorder` Op が持つのは兄弟内の rank だけであり、Server Action へ渡す ID 配列は `resolveReorderedSiblingIds` が全兄弟から再構成する（第 5.2 節）。
 `J` / `K` も同じ `reorder` Op を通るため、dnd とキーボードで並べ替えの経路は 1 本である。
 `<` / `>` と dnd の reparent も同じ `move` Op を通る。
 経路を分けないのは、「同じ構造変更を表す入力」から異なる Server Action 呼び出しロジックが生まれることを避けるためである。
 
-ポインタ操作の完成度は最小限に留めており、次の 2 点が未実装である。
-
-**水平オフセットからの depth 投影を行わない。**
-ドロップ先の行が属する `parentId` をそのまま採用する（`outline-pane.tsx:90`）。
+ポインタ操作の完成度は最小限に留めており、水平オフセットからの depth 投影は未実装である。
+ドロップ先の行が属する `parentId` をそのまま採用する（`outline-pane.tsx:93`）。
 ポインタを右へずらして 1 階層下げる、といった操作はできない。
 階層の変更はキーボード（`<` / `>`）で行う。
-
-**絞り込み中の rank の意味論が直感と合わない。**
-`newRank` は `computeDropResult` が返す「可視の兄弟だけ」の並びから求まり、それを `resolveReorderedSiblingIds` が「全兄弟」の並びへ適用する。
-兄弟が A(0) B(1) C(2) D(3) E(4) で、検索により B と D だけが見えている状態で D を B の上へドラッグすると、可視の並び `[D, B]` から D の rank は 0 になる。
-全兄弟から D を抜いた `[A, B, C, E]` の rank 0 へ挿入するため、結果は `[D, A, B, C, E]` となり、D は見えていない A よりも前へ出る。
-楽観適用（`applyOutlineOp` の `reorder`）も同じ rank を使うため表示とサーバーは一致するが、利用者の意図とは異なりうる。
-`confirmSearch` が絞り込みを残す（第 5.1 節）ため、この状態には通常の操作で入る。
-扱いは Issue #42 の対象である。
 
 ---
 
@@ -1183,9 +1196,7 @@ Supabase CLI は devDependency として固定せず、`Makefile:10` の `npx -y
 
 本文書はフロントエンドの構成・状態設計・UI 実装方式を定めるが、次の項目は決定していない。
 
-- **絞り込み中の dnd 並べ替えにおける rank の意味論**（第 9 章）。「dnd を無効化する」「可視の隣接兄弟を基準に rank を解決する」「現状のままステータス行へ絞り込み中である旨を出す」のいずれを採るかは Issue #42 で検討中である
 - **ポインタの水平オフセットからの depth 投影**（第 9 章）。実装しておらず、V1 で実装するかどうかも決めていない
-- **ヘルプオーバーレイに SEARCH の `Enter` を載せるか**（第 6.1 節・第 6.3 節）。テーブルへドキュメント専用エントリを足す案は Issue #47 にある
 - **一覧取得の上限**（第 8.1 節）。`max_rows = 1000` を超える件数への対処（ページネーション、または上限引き上げ）は決めていない
 - **モバイルのロングタップ複数選択**。閾値と視覚フィードバックの詳細を決めておらず、実装もしていない
 
@@ -1223,7 +1234,7 @@ Supabase CLI は devDependency として固定せず、`Makefile:10` の `npx -y
 ---
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 1a167fc
+- 対象コミット: 2591b2f
 - 作成日: 2026-08-08
 - 更新日: 2026-08-13
 - 生成者: Claude Code
