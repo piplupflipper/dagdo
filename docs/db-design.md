@@ -1,7 +1,7 @@
 # dagdo DB設計書
 
 対象リポジトリ: dagdo
-対象コミット: 1a167fc
+対象コミット: 2591b2f
 作成日: 2026-08-08
 更新日: 2026-08-13
 生成者: Claude Code
@@ -656,7 +656,7 @@ C position=2
 V1ではFractional IndexingやLexoRankは使用しない(req.md §16)。
 
 `position`は同一actual sibling group内で、論理削除済みの行も含めて0から連番で連続する。
-この不変条件を保つ採番規則は12.3節（`reorder_tasks`）と12.2節（`move_task`）が定める。
+この不変条件を保つ採番規則は12.2節（`move_task`）、12.3節（`reorder_tasks`）、12.4節（`restore_task`）、12.5節（`permanently_delete_task`）が定める。
 
 Todoアプリの規模（数百から数千件程度、15章参照）を考慮し、この方式で十分と判断されている(req.md §16, §68)。
 
@@ -972,11 +972,24 @@ cycle検出ロジックをRPCとTriggerで重複させず、不変条件はTrigg
 
 actual parentは変更せず、actual sibling groupの末尾へpositionを移動する(req.md §56)。
 
+末尾へ移す前に、復元対象が元々占めていた`position`より後ろの兄弟を1つ詰める(`supabase/migrations/20260813000001_close_position_gaps_on_restore_and_delete.sql`)。
+これにより8.1節の連番の不変条件が復元後も保たれ、req.md §56の末尾移動もそのまま成り立つ。
+A(0) / B(1、論理削除済み) / C(2) でBを復元する場合、まずC → 1と詰め、続いてBを末尾へ移すため、結果はA(0) / C(1) / B(2)となる。
+
 親子関係や依存関係など、論理削除中に保持していた構造をそのまま再利用する(req.md §56)。
 
 ### 12.5 permanently_delete_task
 
 完全削除時は1トランザクションで、子タスクの`parent_id`のNULL化、子タスクのpositionのルート側での調整、関連dependency edgeの削除、対象タスクのDELETEを行い、中途半端な状態を残さない(req.md §57)。
+
+これに加えて、対象が占めていた`position`より後ろの兄弟を1つ詰め、8.1節の連番の不変条件を保つ(`supabase/migrations/20260813000001_close_position_gaps_on_restore_and_delete.sql`)。
+
+詰める処理は子のreparentより前に置く必要がある。
+子を移すルート末尾を対象自身を除いた`max(position) + 1`で求めるため、詰めを後に置くと子の`position`が二重に詰まる。
+
+ルート直下がB(0)だけで、Bが子X(0) / Y(1)を持つ場合を考える。
+先に詰めるとルート末尾は0になり、X → 0 / Y → 1と採番され、BのDELETE後も`{0, 1}`で連番が保たれる。
+逆にDELETEの後で詰めると、X → 0 / Y → 1を採番した後に`position > 0`の行を詰めるため、Y → 0となってXと重複する。
 
 ### 12.6 RPCに含めない操作
 
@@ -1256,7 +1269,7 @@ req.mdは7つの設計原則を挙げている(req.md §75)。
 ---
 
 対象リポジトリ: dagdo
-対象コミット: 1a167fc
+対象コミット: 2591b2f
 作成日: 2026-08-08
 更新日: 2026-08-13
 生成者: Claude Code

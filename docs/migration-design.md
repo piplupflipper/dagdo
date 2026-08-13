@@ -1,7 +1,7 @@
 # dagdo Supabase マイグレーション設計書
 
 対象リポジトリ: dagdo
-対象コミット: 1a167fc
+対象コミット: 2591b2f
 作成日: 2026-08-08
 更新日: 2026-08-13
 生成者: Claude Code
@@ -46,7 +46,7 @@ dagdo の DB スキーマ（`tasks` / `task_dependencies` / `app_tasks` View / T
 この前提のもと、本文書は次を設計する。
 
 - `supabase/` 配下のディレクトリ構成と `config.toml` の要点（2〜4章）
-- 7 本の migration ファイルへの分割とその順序・境界理由（5章）
+- 8 本の migration ファイルへの分割とその順序・境界理由（5章）
 - seed data の具体的な内容と dev ユーザーの扱い（6章）
 - `req.md` §74 が挙げる 7 シナリオを pgTAP テストへ対応づける表（7章）
 - 型生成フローと本番反映フロー（8〜9章）
@@ -124,6 +124,7 @@ supabase/
     20260808000005_rpc_functions.sql
     20260808000006_rls_policies.sql
     20260808000007_reorder_tasks_exclude_deleted_siblings.sql
+    20260813000001_close_position_gaps_on_restore_and_delete.sql
   seed.sql          # dev 専用 seed data（6章）
   tests/            # pgTAP テスト（7章）
     001_parent_cycle.test.sql
@@ -136,6 +137,7 @@ supabase/
     008_move_task.test.sql
     009_rls_isolation.test.sql
     010_error_contract.test.sql
+    011_position_gaps.test.sql
 ```
 
 `supabase/` はリポジトリ直下に置かれ、`docs/frontend-design.md` が定める `src/` 配下のアプリケーションコードのディレクトリツリーとは完全に独立している。
@@ -187,7 +189,7 @@ GoTrue の有効・無効は dagdo の認証フローに影響しない。
 ## 5. migration ファイル構成
 
 migration は意味単位で分割する（2026-08-08 ユーザー確定の分割方針）。
-現在 7 本ある。
+現在 8 本ある。
 ファイル名は `supabase migration new <name>` が生成するタイムスタンプ prefix に意味名を続けたものである。
 
 | 順序 | ファイル名（意味部分） | 内容 | 根拠 |
@@ -199,11 +201,12 @@ migration は意味単位で分割する（2026-08-08 ユーザー確定の分�
 | 5 | `rpc_functions` | RPC 5 種（`move_task` / `reorder_tasks` / `add_task_dependency` / `restore_task` / `permanently_delete_task`）、execute 権限の revoke/grant | req.md §52〜58 |
 | 6 | `rls_policies` | `tasks` / `task_dependencies` の RLS 有効化と Policy、`authenticated` へのテーブル GRANT | req.md §40〜43、`docs/db-design.md` 第10章 |
 | 7 | `reorder_tasks_exclude_deleted_siblings` | `reorder_tasks` を論理削除済みの兄弟を対象外とする定義へ置き換える | `docs/db-design.md` 第12.3節、Issue #21 |
+| 8 | `close_position_gaps_on_restore_and_delete` | `restore_task` / `permanently_delete_task` を、対象が占めていた `position` の穴を詰める定義へ置き換える | `docs/db-design.md` 第12.4節・第12.5節、Issue #23 |
 
 1 から 6 の順序は依存関係の順序でもある。
 `app_tasks` View は `tasks` テーブルを参照するため 2 の後でなければ作成できず、Trigger は `tasks` / `task_dependencies` の列変更を対象にするため同様に 2 の後、RPC は Trigger が保証する不変条件（cycle 禁止・blocked completion 禁止）に依拠する設計（req.md §53, §54）のため 4 の後に置く。
 
-7 は 1 から 6 の初期構築とは性質が異なり、既存の関数定義を差し替える変更履歴である。
+7 と 8 は 1 から 6 の初期構築とは性質が異なり、既存の関数定義を差し替える変更履歴である。
 5 のファイルを直接書き換えず新しい migration を足しているのは、`supabase db push` で hosted へ反映済みの migration を後から編集すると履歴の整合が崩れるためである（2.1節）。
 
 ### 5.1 各ファイルの分割理由
@@ -279,6 +282,10 @@ Policy は行フィルタであり、それ単体ではテーブルへのアク�
 **7. reorder_tasks_exclude_deleted_siblings**：`reorder_tasks` の定義を差し替える。
 `create or replace function` で 5 のファイルの定義を上書きするため、`supabase db reset` 後の最終状態はこのファイルの内容になる。
 
+**8. close_position_gaps_on_restore_and_delete**：`restore_task` と `permanently_delete_task` の定義を差し替える。
+「同一 actual parent の兄弟グループの `position` は、論理削除済みの行も含めて 0 から連番で連続する」という不変条件を両 RPC の実行後にも保つ（`docs/db-design.md` 第8.1節・第12.4節・第12.5節）。
+7 と同じ位置づけであり、5 のファイルは hosted へ適用済みの可能性があるため遡って書き換えず、`create or replace function` で差し替える。
+
 ### 5.2 RLS を最後にする順序の意図
 
 RLS を最後に配置する意図は、開発初期段階で `psql` や Supabase Studio から素の `tasks` / `task_dependencies` に対して動作確認を行いやすくする点にある。
@@ -289,11 +296,13 @@ Trigger が保証する不変条件（cycle 禁止・blocked completion 禁止�
 同様に、cross-user relation の禁止は複合 FK（`tasks_parent_same_user_fkey` 等、req.md §37, §38）が担っており、これも RLS とは独立に機能する(`docs/db-design.md` 第10.2章)。
 RLS の順序は、あくまでローカル開発時の検証しやすさに関する運用上の判断であり、DB としての安全性は 1〜5 の migration だけで完結している。
 
-`supabase db reset` で再生された直後の DB は 1〜7 すべてを適用済みの状態になるため、本番相当のスキーマとローカル検証時のスキーマが乖離することはない。
+`supabase db reset` で再生された直後の DB は 1〜8 すべてを適用済みの状態になるため、本番相当のスキーマとローカル検証時のスキーマが乖離することはない。
 順序はあくまで migration ファイルという「変更履歴の見せ方」の話であり、最終状態には影響しない。
 
-7 が 6 より後にあることで、`reorder_tasks` の再定義は RLS 有効化の後になる。
-`create or replace function` は `pg_proc` の行を置き換えるだけで ACL を引き継ぐため、5 で設定した execute 権限の revoke/grant は 7 の後も保たれる（`supabase/migrations/20260808000007_reorder_tasks_exclude_deleted_siblings.sql:96`）。
+7 と 8 が 6 より後にあることで、RPC の再定義は RLS 有効化の後になる。
+`create or replace function` は `pg_proc` の行を置き換えるだけで ACL を引き継ぐため、5 で設定した execute 権限の revoke/grant は 7 と 8 の後も保たれる（`supabase/migrations/20260808000007_reorder_tasks_exclude_deleted_siblings.sql:96`）。
+それでも両ファイルは同じ revoke/grant を明示的に再設定する（`supabase/migrations/20260808000007_reorder_tasks_exclude_deleted_siblings.sql:99`、`supabase/migrations/20260813000001_close_position_gaps_on_restore_and_delete.sql:177-181`）。
+権限の状態をファイル単体で読み取れるようにするためである。
 
 ---
 
@@ -381,10 +390,10 @@ pgTAP は PostgreSQL の関数として実行される TAP（Test Anything Proto
 ### 7.1 supabase/tests/ の構成
 
 `supabase test db` は `supabase/tests/` 配下の `*.sql` ファイルを、使い捨てのテスト用 DB に対して実行する。
-このテスト用 DB は `supabase/migrations/` を全件適用した状態から作られるため、pgTAP テストは 5章の 7 本の migration がすべて適用済みであることを前提にできる。
+このテスト用 DB は `supabase/migrations/` を全件適用した状態から作られるため、pgTAP テストは 5章の 8 本の migration がすべて適用済みであることを前提にできる。
 `seed.sql`（6章）はテスト用 DB には適用されないため、pgTAP テストはテストファイル自身の中で必要なテストデータを `INSERT` する。
 
-現在 10 ファイル・81 件のテストケースがある。
+現在 11 ファイル・105 件のテストケースがある。
 
 | ファイル | `plan()` | 主な対象 |
 | --- | --- | --- |
@@ -398,6 +407,7 @@ pgTAP は PostgreSQL の関数として実行される TAP（Test Anything Proto
 | `008_move_task.test.sql` | 15 | `move_task` の position ±1 シフトと拒否条件（7.5節） |
 | `009_rls_isolation.test.sql` | 14 | RLS Policy と GRANT による他ユーザー行の遮断（7.6節） |
 | `010_error_contract.test.sql` | 8 | SQLSTATE `ET001`〜`ET007` の契約（7.7節） |
+| `011_position_gaps.test.sql` | 24 | `restore_task` / `permanently_delete_task` の後も `position` が連番で連続すること（migration 8） |
 
 件数は各ファイル冒頭の `select plan(N)` の合計であり、`make db-test` の出力と一致する。
 
@@ -417,9 +427,11 @@ req.md §74 が重点テスト項目として挙げる 7 シナリオを、次�
 
 `001_parent_cycle.test.sql` には、シナリオ 7 の親子関係側に加えて、自己参照禁止（`tasks_not_own_parent`、req.md §37）や単純な多階層 cycle（A→B→C→A）の拒否も含める。
 
-req.md §74 が挙げる 7 シナリオの外側にも 4 ファイルを置く。
+req.md §74 が挙げる 7 シナリオの外側にも 5 ファイルを置く。
 `006`（7.4節）は View の派生値、`008`（7.5節）は `move_task`、`009`（7.6節）は RLS Policy と GRANT、`010`（7.7節）は SQLSTATE の契約を対象とする。
 `007_reorder_tasks.test.sql` は migration 7（5章）が定める slot 使い回しの並べ替えと、`p_ordered_task_ids` の検証（件数不一致・重複・他グループの ID に対する `INVALID_PARENT`）を対象とする。
+`011_position_gaps.test.sql` は migration 8（5章）が保つ `position` の連番を対象とし、`restore_task` の末尾移動と穴詰め、`permanently_delete_task` の穴詰めと子の root への reparent を、ルート直下と子グループの両方で検証する。
+検証は `app_tasks` View ではなく `tasks` テーブルを直接見る。不変条件が論理削除済みの行も含めた連番を言うためである（`docs/db-design.md` 第8.1節）。
 
 5 と 6 について、これらは `docs/db-design.md` 第10.2章が述べる通り複合 FK（`tasks_parent_same_user_fkey`、`task_dependency_task_fkey`、`task_dependency_depends_on_fkey`）によって保証される制約である(req.md §39)。
 複合 FK は RLS の有効・無効やテスト実行ロールに関わらず常に評価されるため、`005_cross_user_isolation.test.sql` はテスト実行ロールを切り替えずに（後述 7.3節の役割切替を伴わずに）実行できる。
@@ -596,7 +608,7 @@ hosted プロジェクトの作成・`supabase link` に必要な認証情報の
 ---
 
 対象リポジトリ: dagdo
-対象コミット: 1a167fc
+対象コミット: 2591b2f
 作成日: 2026-08-08
 更新日: 2026-08-13
 生成者: Claude Code
