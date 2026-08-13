@@ -1,6 +1,7 @@
 import { type JSX, type KeyboardEvent, useState } from "react";
 import { addDependency } from "@/features/task/actions/add-dependency";
 import { removeDependency } from "@/features/task/actions/remove-dependency";
+import { dependsOnTasksOf } from "@/features/task/lib/depends-on-tasks";
 import { formatDependencyError } from "@/features/task-detail/lib/dependency-error";
 import type { AppTask, TaskDependency } from "@/types/task";
 
@@ -41,11 +42,8 @@ export const DependencySection = ({ task, allTasks, dependencies, resetToken, on
         setDependencyError(null);
     }
 
-    /** このタスクが依存する依存先タスク一覧 (task_dependencies.task_id === task.id) */
-    const dependsOnTasks = dependencies
-        .filter((dependency) => dependency.task_id === task.id)
-        .map((dependency) => allTasks.find((candidate) => candidate.id === dependency.depends_on_task_id))
-        .filter((candidate): candidate is AppTask => candidate !== undefined);
+    /** このタスクが依存する依存先タスク一覧 (完了済みも取り消し線付きで並べるため、完了では絞り込まない) */
+    const dependsOnTasks = dependsOnTasksOf(allTasks, dependencies, task.id, { onlyIncomplete: false });
 
     /**
      * 依存先として追加できるタスク

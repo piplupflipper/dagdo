@@ -7,8 +7,9 @@
  * 1. settle 時 (`setCursor(tempId → 実id)`) や revalidate 到着 (tempId 行 → 実 id 行) によるカーソル/行の
  *    id 変化を、outline-shell のレンダー時調整 (「カーソルが別の行へ移ったら／編集中の行が表示行から
  *    消えたら行内編集を畳む」) が「別の行への移動」や「行の消失」と誤認し、編集中の下書きを破棄してしまう。
- *    `recordRename` で記録した対応を `isSameLogicalRow` で引き、「実体は同じ行の id 付け替えである」と
- *    判定できるようにする
+ *    `recordRename` で記録した対応を `isSameLogicalRow`
+ *    (`features/task/lib/temp-id-renames.ts`。`DetailPane` も使うため中立な場所に置いてある) で引き、
+ *    「実体は同じ行の id 付け替えである」と判定できるようにする
  * 2. settle 前 (tempId がまだ pending) に Enter/Esc でタイトル編集を確定すると、以前は
  *    `isPendingTaskId` のガードが入力を黙って捨てていた。`queuePendingTitle` で tempId 宛に保留し、
  *    settle 後に `takePendingTitle` で取り出して実 id の通常パイプライン (楽観適用 + updateTask + undo 履歴)
@@ -33,17 +34,6 @@ export const createPendingCreateRegistry = (): PendingCreateRegistry => ({
 export const recordRename = (registry: PendingCreateRegistry, tempId: string, realId: string): void => {
     registry.renamedIds.set(tempId, realId);
 };
-
-/**
- * `previousId → nextId` の変化が、`recordRename` で記録済みの「同一論理行の id 付け替え」かどうか
- *
- * outline-shell のレンダー時調整 (カーソル移動検知、DetailPane の `lastTaskId` 検知) が、
- * この付け替えを「別の行への移動」として編集状態を畳んでしまわないためのガードに使う。
- * `renamedIds` だけを引数に取るのは、`DetailPane` (`detail-pane.tsx`) のように `PendingCreateRegistry`
- * 全体ではなく `renamedIds` の読み取り専用ビューだけを props で受け取る呼び出し元とも共有できるようにするため
- */
-export const isSameLogicalRow = (renamedIds: ReadonlyMap<string, string>, previousId: string | null, nextId: string | null): boolean =>
-    previousId !== null && nextId !== null && renamedIds.get(previousId) === nextId;
 
 /** settle 前の Enter/Esc 確定を、tempId 宛の保留タイトルとしてキューに置く (同一 tempId は最新の 1 件で上書き) */
 export const queuePendingTitle = (registry: PendingCreateRegistry, tempId: string, title: string): void => {

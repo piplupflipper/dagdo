@@ -1,5 +1,5 @@
 import { type JSX, type KeyboardEvent, useState } from "react";
-import { formatDate } from "@/features/task-detail/lib/format-date";
+import { formatDate } from "@/lib/date/timezone";
 import type { AppTask } from "@/types/task";
 
 type DueDateFieldProps = {

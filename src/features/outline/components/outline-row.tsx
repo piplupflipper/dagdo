@@ -4,6 +4,7 @@ import type { JSX, KeyboardEvent } from "react";
 import { InlineTitleEditor } from "@/features/outline/components/inline-title-editor";
 import type { OutlineTreeRow } from "@/features/outline/lib/build-tree";
 import type { InlineTitleCaret } from "@/features/outline/lib/inline-title-edit";
+import { isOverdue } from "@/lib/date/timezone";
 import type { AppTask } from "@/types/task";
 
 export type OutlineRowProps = {
@@ -42,14 +43,8 @@ const formatDueLabel = (dueDate: string): string => {
     return `期日 ${Number(month)}/${Number(day)}`;
 };
 
-/** Asia/Tokyo の「今日」より前の due_date かどうか (req.md §6 相当。未完了タスクのみ対象) */
-const isOverdue = (task: AppTask): boolean => {
-    if (task.due_date === null || task.completed_at !== null) {
-        return false;
-    }
-    const todayJst = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(new Date());
-    return task.due_date < todayJst;
-};
+/** 期日が過ぎている未完了タスクかどうか (req.md §6 相当。完了済みを対象外にするのは一覧側の責務) */
+const isRowOverdue = (task: AppTask): boolean => task.due_date !== null && task.completed_at === null && isOverdue(task.due_date);
 
 /**
  * アウトライン 1 行 (バレット・タイトル・期日チップ・🔒, docs/frontend-design.md §7.1 / モック p26)
@@ -77,7 +72,7 @@ export const OutlineRow = ({
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
 
     const isDone = task.completed_at !== null;
-    const overdue = isOverdue(task);
+    const overdue = isRowOverdue(task);
     const registerNode = registerRow(task.id);
 
     const rowStateClass = isCursor ? "bg-accent/10 shadow-[inset_2px_0_0_var(--color-accent)]" : isVisualSelected ? "bg-accent/15" : "hover:bg-bg-alt";

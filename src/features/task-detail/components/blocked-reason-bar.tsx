@@ -1,4 +1,5 @@
 import type { JSX } from "react";
+import { dependsOnTasksOf } from "@/features/task/lib/depends-on-tasks";
 import type { AppTask, TaskDependency } from "@/types/task";
 
 /** BlockedReasonBar の props */
@@ -15,11 +16,7 @@ type BlockedReasonBarProps = {
  * この計算は表示文言のための提示ロジックであり、is_blocked 自体の正とはしない (docs/frontend-design.md §5.3)
  */
 export const BlockedReasonBar = ({ task, allTasks, dependencies }: BlockedReasonBarProps): JSX.Element | null => {
-    const unmetTitles = dependencies
-        .filter((dependency) => dependency.task_id === task.id)
-        .map((dependency) => allTasks.find((candidate) => candidate.id === dependency.depends_on_task_id))
-        .filter((blocker): blocker is AppTask => blocker !== undefined && blocker.completed_at === null)
-        .map((blocker) => blocker.title);
+    const unmetTitles = dependsOnTasksOf(allTasks, dependencies, task.id, { onlyIncomplete: true }).map((blocker) => blocker.title);
 
     if (unmetTitles.length === 0) {
         return null;
