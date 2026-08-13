@@ -32,6 +32,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# .env.example は値を持たない変数の一覧であり、セットアップ手順
+# (README / docs/github-oauth-setup.md / scripts/setup-env-local.sh) が参照するため追跡する
+!.env.example
 
 # vercel
 .vercel
