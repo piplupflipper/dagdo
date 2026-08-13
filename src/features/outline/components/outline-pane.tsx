@@ -1,5 +1,5 @@
 import { DndContext, type DragEndEvent, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
-import { arrayMove, SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { type JSX, useRef } from "react";
 import { DependencyRail } from "@/features/outline/components/dependency-rail";
 import { OutlineRow } from "@/features/outline/components/outline-row";
@@ -87,12 +87,10 @@ export const OutlinePane = ({
             return;
         }
 
-        const targetSiblingIds = dndItems.filter((item) => item.parentId === overItem.parentId).map((item) => item.id);
-        const fromIndex = targetSiblingIds.indexOf(activeId);
-        const overIndex = targetSiblingIds.indexOf(overId);
-        const orderedIds = fromIndex >= 0 ? arrayMove(targetSiblingIds, fromIndex, overIndex) : [...targetSiblingIds.slice(0, overIndex), activeId, ...targetSiblingIds.slice(overIndex)];
-
-        const dropResult = computeDropResult({ tasks, taskId: activeId, targetParentId: overItem.parentId, targetOrderedIds: orderedIds });
+        // 並べ替え後の並びは `computeDropResult` が全兄弟 (`tasks`) から組み立てる。
+        // 可視行 (`dndItems`) から組み立てると、絞り込み中に見えていない兄弟を飛び越える (Issue #42)。
+        // `dndItems` を引くのはドロップ先が可視行であることの確認と、その actual parent の取得のためだけである
+        const dropResult = computeDropResult({ tasks, taskId: activeId, targetParentId: overItem.parentId, overTaskId: overId });
         if (dropResult.kind === "reorder") {
             onReorder(activeId, dropResult.result);
         } else {

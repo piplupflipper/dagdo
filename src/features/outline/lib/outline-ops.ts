@@ -68,7 +68,7 @@ const siblingsSortedByPosition = (tasks: readonly AppTask[], parentId: string | 
  *
  * `applyOutlineOp` の楽観適用と、Server Action 呼び出し (outline-shell.tsx) の両方から呼び、
  * 「対象 1 件を抜いて新しい rank へ挿し直す」という同じ並べ替え規則を共有する。
- * `computeSiblingSwap` (`J`/`K`) と `computeDropResult` の reorder 分岐 (dnd-kit の `arrayMove`) は
+ * `computeSiblingSwap` (`J`/`K`) と `computeDropResult` の reorder 分岐 (ドロップ先の直前/直後へ挿し直す) は
  * いずれも「対象 1 件の移動」しか生成しないため、この前提で表現できる
  */
 export const resolveReorderedSiblingIds = (tasks: readonly AppTask[], op: { taskId: string; newPosition: number }): SiblingReorderResult | null => {
