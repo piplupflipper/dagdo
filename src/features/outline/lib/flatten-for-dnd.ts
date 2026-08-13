@@ -178,24 +178,43 @@ export const computeCreatePosition = ({ tasks, cursorTaskId, placement }: { task
  * dnd-kit のドロップ確定時に、ドロップ先の actual parent が変わったかどうかで
  * reorderTasks 用 / moveTask 用のどちらの結果を返すかを判定する純粋関数 (docs/frontend-design.md §9)
  *
- * `targetOrderedIds` はドロップ後に想定される「ドロップ先 parent 内での希望順序」(移動対象タスクを含む)
+ * 挿入位置の基準にする兄弟の並びは、可視行ではなく `tasks` (全兄弟) の position 順から作る (Issue #42)。
+ * 絞り込み中は可視行からクエリに合わない兄弟が欠けるため、可視の兄弟だけから求めた rank を
+ * そのまま全兄弟へ当てはめると、見えていない兄弟を飛び越えてしまう
+ * (rank を全兄弟の並びへ適用するのは outline-ops.ts の `resolveReorderedSiblingIds` である)。
+ * 絞り込みが無ければ可視の兄弟 = 全兄弟なので結果は変わらない。
+ * 折りたたみは兄弟グループごと隠す (deriveVisibleRows は折りたたんだ行より深い行をまとめて落とす) ため、
+ * 兄弟の一部だけが欠けることは起きず、ここでも結果は変わらない。
+ *
+ * `overTaskId` はドロップ先の行 (dnd-kit の `over.id`)。挿入位置は dnd-kit の `arrayMove` と同じ規則、
+ * すなわち「対象 1 件を抜いた並びの、抜く前に `overTaskId` があった添字」へ挿し込む形で決める。
+ * 結果として上へのドラッグはドロップ先の直前、下へのドラッグはドロップ先の直後に入る
  */
 export const computeDropResult = ({
     tasks,
     taskId,
     targetParentId,
-    targetOrderedIds,
+    overTaskId,
 }: {
     tasks: readonly AppTask[];
     taskId: string;
     targetParentId: string | null;
-    targetOrderedIds: readonly string[];
+    overTaskId: string;
 }): { kind: "reorder"; result: SiblingReorderResult } | { kind: "reparent"; result: ReparentResult } => {
     const target = tasks.find((task) => task.id === taskId);
+    const orderedTaskIds = siblingsOf(tasks, targetParentId).map((sibling) => sibling.id);
+    const fromRank = orderedTaskIds.indexOf(taskId);
+    const overRank = orderedTaskIds.indexOf(overTaskId);
+    // ドロップ先がその兄弟グループに属さない場合 (現状の呼び出し方では起きない) は末尾へ落とす
+    const insertRank = overRank < 0 ? orderedTaskIds.length : overRank;
+    if (fromRank >= 0) {
+        orderedTaskIds.splice(fromRank, 1);
+    }
+    orderedTaskIds.splice(insertRank, 0, taskId);
+
     const sameParent = target !== undefined && target.parent_id === targetParentId;
     if (sameParent) {
-        return { kind: "reorder", result: { parentId: targetParentId, orderedTaskIds: [...targetOrderedIds] } };
+        return { kind: "reorder", result: { parentId: targetParentId, orderedTaskIds } };
     }
-    const index = targetOrderedIds.indexOf(taskId);
-    return { kind: "reparent", result: { newParentId: targetParentId, newPosition: index < 0 ? targetOrderedIds.length : index } };
+    return { kind: "reparent", result: { newParentId: targetParentId, newPosition: orderedTaskIds.indexOf(taskId) } };
 };
