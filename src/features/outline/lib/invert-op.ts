@@ -34,7 +34,9 @@ export const invertOutlineOp = (op: OutlineOp, tasksSnapshot: readonly AppTask[]
             return previous === null ? null : [{ type: "updateDueDate", taskId: op.taskId, dueDate: previous.due_date }];
 
         case "move":
-            // インデント / アウトデント / dnd の親変更の逆操作。移動前の実 position (rank ではない) へ戻す
+            // インデント / アウトデント / dnd の親変更の逆操作。移動前の実 position (rank ではない) へ戻す。
+            // 戻り先は `tasksSnapshot` が実 position として持っているため、末尾を表す `null`
+            // (migration 20260813000002、Issue #53) を使う必要はない
             return previous === null ? null : [{ type: "move", taskId: op.taskId, newParentId: previous.parent_id, newPosition: previous.position }];
 
         case "reorder":

@@ -85,6 +85,12 @@ describe("callServerForOp: Op から Server Action への振り分け", () => {
         expect(moveTask).toHaveBeenCalledWith({ taskId: "t1", newParentId: null, newPosition: 3 });
     });
 
+    it("move は末尾を表す newPosition = null もそのまま渡す", async () => {
+        // `null` は move_task RPC の「新しい兄弟グループの末尾へ追加」(migration 20260813000002、Issue #53)
+        await callServerForOp({ type: "move", taskId: "t1", newParentId: "p1", newPosition: null }, []);
+        expect(moveTask).toHaveBeenCalledWith({ taskId: "t1", newParentId: "p1", newPosition: null });
+    });
+
     it("softDelete は softDeleteTask を呼ぶ", async () => {
         await callServerForOp({ type: "softDelete", taskId: "t1" }, []);
         expect(softDeleteTask).toHaveBeenCalledWith({ taskId: "t1" });

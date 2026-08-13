@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildOutlineTree, deriveVisibleRows, type OutlineTreeRow } from "@/features/outline/lib/build-tree";
-import { computeCreatePosition, computeDropResult, findSiblingTaskId, flattenForDnd } from "@/features/outline/lib/flatten-for-dnd";
+import { computeCreatePosition, computeDropResult, computeIndent, computeOutdent, findSiblingTaskId, flattenForDnd } from "@/features/outline/lib/flatten-for-dnd";
 import { resolveReorderedSiblingIds } from "@/features/outline/lib/outline-ops";
 import { filterTasks } from "@/features/search/lib/filter-tasks";
 import type { AppTask } from "@/types/task";
@@ -92,6 +92,50 @@ describe("findSiblingTaskId", () => {
 
     it("未知のタスクでは null を返す", () => {
         expect(findSiblingTaskId({ tasks, taskId: "unknown", direction: "down" })).toBeNull();
+    });
+});
+
+describe("computeIndent", () => {
+    it("直前の兄弟の子の末尾 (newPosition: null) へ繰り込む", () => {
+        expect(computeIndent({ tasks, taskId: "c" })).toEqual({ newParentId: "b", newPosition: null });
+    });
+
+    // 末尾を数値で表そうとすると、可視の子の数を数えるほかない。
+    // app_tasks View は論理削除済みを除外するため (supabase/migrations/20260808000003_app_tasks_view.sql)、
+    // その数は移動先の実際の末尾より小さくなりうる (Issue #53)
+    it("移動先の可視の子の数に依らず末尾を指す (論理削除済みの子が残っていても取り違えない)", () => {
+        // b の可視の子は b1 の 1 件だが、その position は 3 である (0〜2 に論理削除済みの子が残っており、実際の末尾は 4)。
+        // 変更前は可視の子の数 1 を newPosition にしていたため、末尾ではなく b1 より前へ入っていた
+        const withDeletedChildren = [task({ id: "a", position: 0 }), task({ id: "b", position: 1 }), task({ id: "c", position: 2 }), task({ id: "b1", parentId: "b", position: 3, sortPath: [1, 3] })];
+        expect(computeIndent({ tasks: withDeletedChildren, taskId: "c" })).toEqual({ newParentId: "b", newPosition: null });
+    });
+
+    it("兄弟グループの先頭行は繰り込めない (直前の兄弟がいない)", () => {
+        expect(computeIndent({ tasks, taskId: "a" })).toBeNull();
+        expect(computeIndent({ tasks, taskId: "b1" })).toBeNull();
+    });
+
+    it("未知のタスクでは null を返す", () => {
+        expect(computeIndent({ tasks, taskId: "unknown" })).toBeNull();
+    });
+});
+
+describe("computeOutdent", () => {
+    it("現在の親の直後 (親の position + 1) へ出す", () => {
+        expect(computeOutdent({ tasks, taskId: "b1" })).toEqual({ newParentId: null, newPosition: 2 });
+    });
+
+    // 移動先の兄弟グループの表示上の添字ではなく親の実 position を基準にしているため、
+    // 論理削除済みの兄弟が残っていても結果は実 position のままである (Issue #53)
+    it("移動先の兄弟グループに論理削除済みタスクが残っていても、親の実 position を基準にする", () => {
+        // ルート直下は a(0) / (論理削除済み)(1) / b(2) で、b の表示上の添字は 1 だが実 position は 2
+        const withDeletedSibling = [task({ id: "a", position: 0 }), task({ id: "b", position: 2 }), task({ id: "b1", parentId: "b", position: 0, sortPath: [2, 0] })];
+        expect(computeOutdent({ tasks: withDeletedSibling, taskId: "b1" })).toEqual({ newParentId: null, newPosition: 3 });
+    });
+
+    it("ルート直下のタスクと未知のタスクでは null を返す", () => {
+        expect(computeOutdent({ tasks, taskId: "a" })).toBeNull();
+        expect(computeOutdent({ tasks, taskId: "unknown" })).toBeNull();
     });
 });
 
@@ -191,12 +235,22 @@ describe("computeDropResult", () => {
         expect(resolveReorderedSiblingIds(dropTasks, { taskId: "d", newPosition: 0 })).toEqual({ parentId: null, orderedTaskIds: ["d", "a", "b", "c", "e"] });
     });
 
-    it("親を跨ぐドロップは、ドロップ先の兄弟の中での rank を newPosition にする", () => {
+    it("親を跨ぐドロップは、ドロップ先の行の実 position を newPosition にする", () => {
         expect(computeDropResult({ tasks: dropTasks, taskId: "e", targetParentId: "b", overTaskId: "b2" })).toEqual({ kind: "reparent", result: { newParentId: "b", newPosition: 1 } });
         expect(computeDropResult({ tasks: dropTasks, taskId: "b2", targetParentId: null, overTaskId: "c" })).toEqual({ kind: "reparent", result: { newParentId: null, newPosition: 2 } });
     });
 
+    // move_task RPC は p_new_position を論理削除済みも含む実 position として解釈する (migration 0005)。
+    // 変更前は可視の兄弟の中での添字を渡していたため、1 つ手前のスロットへ落ちていた (Issue #53)
+    it("親を跨ぐドロップで、移動先に論理削除済みの兄弟が残っていても添字ではなく実 position を渡す", () => {
+        // b の子は b1(0) / (論理削除済み)(1) / b3(2)。b3 の表示上の添字は 1 だが実 position は 2
+        const withDeletedChild = [...dropTasks.filter((source) => source.id !== "b2"), task({ id: "b3", parentId: "b", position: 2, sortPath: [1, 2], title: "パン" })];
+        expect(computeDropResult({ tasks: withDeletedChild, taskId: "e", targetParentId: "b", overTaskId: "b3" })).toEqual({ kind: "reparent", result: { newParentId: "b", newPosition: 2 } });
+    });
+
     it("ドロップ先がその兄弟グループに属さない場合は末尾へ落とす", () => {
         expect(droppedOrder({ tasks: dropTasks, activeId: "d", overId: "b1" })).toEqual(["a", "b", "c", "e", "d"]);
+        // 親を跨ぐ場合の末尾は newPosition: null で表す (move_task の p_new_position = NULL、Issue #53)
+        expect(computeDropResult({ tasks: dropTasks, taskId: "e", targetParentId: "b", overTaskId: "c" })).toEqual({ kind: "reparent", result: { newParentId: "b", newPosition: null } });
     });
 });

@@ -9,6 +9,13 @@
 --   - 負の position が INVALID_POSITION (SQLSTATE ET006) で拒否されること
 --   - 他ユーザーの task を親に指定すると INVALID_PARENT (SQLSTATE ET007) で拒否されること
 --
+-- 20260813000002_move_task_append_to_tail.sql (Issue #53) が加えた挙動も検証する:
+--   - 論理削除済みの兄弟が残っている sibling group でも、p_new_position が論理削除済みを含む
+--     実 position として解釈されること
+--   - p_new_position = NULL が「論理削除済みも含めた actual sibling group の末尾へ追加」を表すこと。
+--     同一 sibling group 内の末尾指定では、旧グループの隙間を詰めた後の末尾になること
+--     (詰める前に求めると対象自身の分だけ 1 つ大きくなり、position の連番に穴が空く)
+--
 -- エラーはメッセージ前置詞 (throws_like) と SQLSTATE (throws_ok) の両方で固定する。
 -- src/features/task/lib/map-db-error.ts は SQLSTATE を最優先で判定するため、メッセージだけを
 -- 検査すると errcode の書き換えを検出できない。ET001〜ET007 の全体は
@@ -22,7 +29,7 @@
 -- 固定データは使わず、このファイル専用の user / tasks を都度 INSERT する
 -- (supabase test db は seed.sql を適用しないため、tests/ 側でフィクスチャを用意する)。
 begin;
-select plan(15);
+select plan(24);
 
 insert into next_auth.users (id, name, email)
 values
@@ -229,6 +236,137 @@ select throws_ok(
   'ET007'::char(5),
   null,
   'a parent owned by another user is rejected with SQLSTATE ET007'
+);
+
+--
+-- ケース6〜9: 論理削除済みの兄弟が残っている sibling group (Issue #53)
+--
+-- ここまでの状態は root: P1(0) / C(1) / P2(2)、P1 の子: A(0)、P2 の子: X(0) / B(1) / Y(2) である。
+-- Issue #53 の例と同じ形の sibling group を追加する。
+-- P3 の子 DX(0) / DY(1, 論理削除済み) / DZ(2) は、issue 本文の X / Y(論理削除済み) / Z に対応する
+-- (P2 の子 X / Y とは別物である)。
+-- app_tasks View は論理削除済みを除外するため (20260808000003_app_tasks_view.sql)、
+-- クライアントに見えるのは DX と DZ の 2 件だけになる。
+--
+-- 検証は tasks テーブルを直接見て、論理削除済みの DY も数える
+-- (011_position_gaps.test.sql と同じ方針)。
+insert into public.tasks (id, user_id, title, position)
+values ('80000000-0000-0000-0000-000000000003', '80000000-0000-0000-0000-00000000000a', 'P3', 3);
+
+insert into public.tasks (id, user_id, title, parent_id, position, deleted_at)
+values
+  ('80000000-0000-0000-0000-0000000000d1', '80000000-0000-0000-0000-00000000000a', 'DX', '80000000-0000-0000-0000-000000000003', 0, null),
+  ('80000000-0000-0000-0000-0000000000d2', '80000000-0000-0000-0000-00000000000a', 'DY', '80000000-0000-0000-0000-000000000003', 1, now()),
+  ('80000000-0000-0000-0000-0000000000d3', '80000000-0000-0000-0000-00000000000a', 'DZ', '80000000-0000-0000-0000-000000000003', 2, null);
+
+--
+-- ケース6: p_new_position は論理削除済みを含む実 position である
+--
+-- B(P2, 1) を P3 の position 2 (= DZ の実 position) へ移す。DZ が +1 されて B がその手前に入る。
+-- クライアントが可視の兄弟 (DX / DZ) の数 2 を「末尾」のつもりで渡すと、この結果になってしまう
+-- のが Issue #53 の不具合である。RPC 側の解釈は実 position のまま変えない。
+--
+-- 16. 移動が成功する
+select lives_ok(
+  $$select public.move_task(
+      '80000000-0000-0000-0000-0000000000a2',
+      '80000000-0000-0000-0000-000000000003',
+      2)$$,
+  'moving B into a sibling group that contains a soft-deleted row succeeds'
+);
+
+-- 17. 論理削除済みの DY は動かず、DZ だけが +1 される (実 position としての解釈)
+select is(
+  (select array_agg(t.title || ':' || t.position order by t.position)
+   from public.tasks t
+   where t.user_id = '80000000-0000-0000-0000-00000000000a'
+     and t.parent_id = '80000000-0000-0000-0000-000000000003'),
+  array['DX:0', 'DY:1', 'B:2', 'DZ:3'],
+  'p_new_position is interpreted as the actual position, counting the soft-deleted sibling'
+);
+
+-- 18. 旧グループ P2 の隙間が詰まる
+select is(
+  (select array_agg(t.title || ':' || t.position order by t.position)
+   from public.tasks t
+   where t.user_id = '80000000-0000-0000-0000-00000000000a'
+     and t.parent_id = '80000000-0000-0000-0000-000000000002'),
+  array['X:0', 'Y:1'],
+  'the old sibling group (P2) closes the gap left by B'
+);
+
+--
+-- ケース7: p_new_position = NULL は論理削除済みを含む末尾を指す
+--
+-- A(P1, 0) を P3 へ NULL (末尾) で移す。末尾は max(position) + 1 = 4 であり、
+-- 可視の兄弟の数 (DX / B / DZ の 3 件) ではない。
+--
+-- 19. 末尾指定の移動が成功する
+select lives_ok(
+  $$select public.move_task(
+      '80000000-0000-0000-0000-0000000000a1',
+      '80000000-0000-0000-0000-000000000003',
+      null)$$,
+  'moving A to the tail of a sibling group with a null position succeeds'
+);
+
+-- 20. A は論理削除済みも含めた末尾 (4) に入り、既存の兄弟は 1 つも動かない
+select is(
+  (select array_agg(t.title || ':' || t.position order by t.position)
+   from public.tasks t
+   where t.user_id = '80000000-0000-0000-0000-00000000000a'
+     and t.parent_id = '80000000-0000-0000-0000-000000000003'),
+  array['DX:0', 'DY:1', 'B:2', 'DZ:3', 'A:4'],
+  'a null position appends to the actual tail, counting the soft-deleted sibling'
+);
+
+--
+-- ケース8: 同一 sibling group 内での NULL は、隙間を詰めた後の末尾へ入る
+--
+-- DX(P3, 0) を P3 へ NULL で移す。先に DY / B / DZ / A が -1 され、その後の末尾 4 へ DX が入る。
+-- 詰める前に末尾を求めると 5 になり、position 4 が空いて連番が途切れる。
+--
+-- 21. 同一グループ内の末尾指定が成功する
+select lives_ok(
+  $$select public.move_task(
+      '80000000-0000-0000-0000-0000000000d1',
+      '80000000-0000-0000-0000-000000000003',
+      null)$$,
+  'moving DX to the tail of its own sibling group with a null position succeeds'
+);
+
+-- 22. 詰めた後の末尾に入り、position は 0 から連番で連続したままになる
+select is(
+  (select array_agg(t.title || ':' || t.position order by t.position)
+   from public.tasks t
+   where t.user_id = '80000000-0000-0000-0000-00000000000a'
+     and t.parent_id = '80000000-0000-0000-0000-000000000003'),
+  array['DY:0', 'B:1', 'DZ:2', 'A:3', 'DX:4'],
+  'a null position within the same sibling group lands after the gap is closed, keeping positions contiguous'
+);
+
+--
+-- ケース9: 子を持たない親への NULL は 0 になる
+--
+-- A(P3, 3) を C (子を持たない root task) へ NULL で移す。
+--
+-- 23. 子の居ない親への末尾指定が成功する
+select lives_ok(
+  $$select public.move_task(
+      '80000000-0000-0000-0000-0000000000a1',
+      '80000000-0000-0000-0000-0000000000a3',
+      null)$$,
+  'moving A under a childless parent with a null position succeeds'
+);
+
+-- 24. 最初の子は position 0 に入る
+select is(
+  (select array_agg(t.title || ':' || t.position order by t.position)
+   from public.tasks t
+   where t.user_id = '80000000-0000-0000-0000-00000000000a'
+     and t.parent_id = '80000000-0000-0000-0000-0000000000a3'),
+  array['A:0'],
+  'a null position on an empty sibling group resolves to 0'
 );
 
 select * from finish();
