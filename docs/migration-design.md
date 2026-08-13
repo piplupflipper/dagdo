@@ -1,8 +1,9 @@
 # dagdo Supabase マイグレーション設計書
 
 対象リポジトリ: dagdo
-対象コミット: 1b82bda
+対象コミット: a9b61ed
 作成日: 2026-08-08
+更新日: 2026-08-13
 生成者: Claude Code
 
 本文書は `req.md` （Todo Application 詳細設計書）の記載を根拠とする。
@@ -13,9 +14,9 @@
 DB スキーマ・RLS・Trigger・RPC の設計内容そのものは `docs/db-design.md` に、フロントエンドのディレクトリ構成は `docs/frontend-design.md` に、認証・認可の詳細は `docs/auth-design.md` に委ねる。
 本文書が扱うのは、それらの設計を Supabase CLI を用いてどう migration ファイル・seed data・pgTAP テストへ落とし込み、どのような開発ループと本番反映フローで運用するかという実行計画である。
 
-本文書中、`req.md` に根拠を持つ記述は「確定事項」として断定で書く。
-2026-08-08 にユーザーが確定した 3 点（migration の分割方針、seed data の元データ、pgTAP による DB テスト方針）も確定事項として扱う。
-それ以外の記述で本設計書が新たに下す判断には「提案」と明記し、未確定であることを示す。
+本文書は実装と一体で改訂する。
+記述と `supabase/` 配下の実物が食い違っている場合は実物を正とみなして本文書を直す。
+まだ決めていない事項は10章に集約する。
 
 ## 目次
 
@@ -36,7 +37,7 @@ DB スキーマ・RLS・Trigger・RPC の設計内容そのものは `docs/db-de
 ## 1. サマリ
 
 dagdo の DB スキーマ（`tasks` / `task_dependencies` / `app_tasks` View / Trigger / RPC / RLS / `next_auth` schema）は `docs/db-design.md` と `docs/auth-design.md` で確定している。
-本文書はこれを Supabase CLI のローカル開発フローへ落とし込むための実行計画であり、次の 3 点を確定事項として前提に置く（2026-08-08 ユーザー確定）。
+本文書はこれを Supabase CLI のローカル開発フローへ落とし込む実行計画であり、次の 3 点を前提に置く（2026-08-08 ユーザー確定）。
 
 1. **migration は意味単位で数本に分割する**。1 本の init migration へ集約しない。
 2. **seed data は UI モック検討で使ったサンプルデータをそのまま用いる**。状態パターン（依存連鎖・fan-in・期限切れ・今日期日・完了済み・blocked・論理削除済み）を網羅する。
@@ -45,11 +46,11 @@ dagdo の DB スキーマ（`tasks` / `task_dependencies` / `app_tasks` View / T
 この前提のもと、本文書は次を設計する。
 
 - `supabase/` 配下のディレクトリ構成と `config.toml` の要点（2〜4章）
-- 6 本の migration ファイルへの分割案とその順序・境界理由（5章）
+- 7 本の migration ファイルへの分割とその順序・境界理由（5章）
 - seed data の具体的な内容と dev ユーザーの扱い（6章）
 - `req.md` §74 が挙げる 7 シナリオを pgTAP テストへ対応づける表（7章）
 - 型生成フローと本番反映フロー（8〜9章）
-- 未決事項（10章）
+- 決まっていない事項（10章）
 
 フロントエンドのディレクトリ構成（`src/` 配下）は `docs/frontend-design.md` の対象であり、`supabase/` 配下とは独立したディレクトリツリーである（3章で述べる）。
 UI/UX の詳細、Server Action の実装詳細は本文書の対象外とする。
@@ -79,7 +80,7 @@ dagdo は専用バックエンドサーバーを持たず、Next.js Server Actio
 
 ### 2.2 日常の開発ループ
 
-新しい migration を追加する際の開発ループを次に示す（提案。CLI の一般的な使い方を dagdo の運用に当てはめたもの）。
+新しい migration を追加する際の開発ループを次に示す（CLI の一般的な使い方を dagdo の運用に当てはめたもの）。
 
 ```text
 supabase migration new <意味を表す名前>
@@ -110,18 +111,19 @@ git commit
 
 ## 3. ディレクトリ構成
 
-`supabase init` によって、リポジトリ直下に次のディレクトリ構成が作られる（提案。`config.toml` 以外はこれから作成する）。
+リポジトリ直下の `supabase/` は次の構成である。
 
 ```text
 supabase/
   config.toml       # ローカルスタックの設定（4章）
   migrations/       # migration ファイル群（5章）
-    <timestamp>_next_auth_schema.sql
-    <timestamp>_tasks_and_dependencies.sql
-    <timestamp>_app_tasks_view.sql
-    <timestamp>_triggers.sql
-    <timestamp>_rpc_functions.sql
-    <timestamp>_rls_policies.sql
+    20260808000001_next_auth_schema.sql
+    20260808000002_tasks_and_dependencies.sql
+    20260808000003_app_tasks_view.sql
+    20260808000004_triggers.sql
+    20260808000005_rpc_functions.sql
+    20260808000006_rls_policies.sql
+    20260808000007_reorder_tasks_exclude_deleted_siblings.sql
   seed.sql          # dev 専用 seed data（6章）
   tests/            # pgTAP テスト（7章）
     001_parent_cycle.test.sql
@@ -130,6 +132,7 @@ supabase/
     004_restore.test.sql
     005_cross_user_isolation.test.sql
     006_app_tasks_view.test.sql
+    007_reorder_tasks.test.sql
 ```
 
 `supabase/` はリポジトリ直下に置かれ、`docs/frontend-design.md` が定める `src/` 配下のアプリケーションコードのディレクトリツリーとは完全に独立している。
@@ -147,15 +150,14 @@ supabase/
 `@auth/supabase-adapter` は Supabase Data API（PostgREST）経由で `next_auth` schema のテーブルを操作する。
 Data API は既定では `public`（および `graphql_public`）のみを exposed schema とするため、`next_auth` を追加しない限り Adapter からの読み書きが失敗する(`docs/auth-design.md` 第4.3節)。
 
-`docs/auth-design.md` 第4.3節は、この設定箇所を「Supabase Dashboard の項目名、または `supabase/config.toml` 上の記述箇所は実装時に確認する」と未決事項に置いている。
-ローカルスタックについては `config.toml` の `[api]` セクションが該当箇所であり、既定の `schemas` 配列（通常 `["public", "graphql_public"]`）へ `next_auth` を追加する（提案）。
+ローカルスタックでは `config.toml` の `[api]` セクションが該当箇所であり、既定の `schemas` 配列（`["public", "graphql_public"]`）へ `next_auth` を加える（`supabase/config.toml:13`）。
 
-```text
+```toml
 [api]
 schemas = ["public", "graphql_public", "next_auth"]
 ```
 
-hosted Supabase プロジェクト側で同等の設定（Dashboard 上の exposed schemas 設定）を行う必要がある点は、`docs/auth-design.md` 第10章の未決事項と重複するため、本文書では 10章で参照するに留める。
+hosted Supabase では `config.toml` が反映されないため、Dashboard または Management API で同等の設定を行う（`docs/deploy.md` 第5章）。
 
 ### 4.2 Supabase Auth（GoTrue）の扱い
 
@@ -163,48 +165,57 @@ Supabase Auth は認証主体として使用しない(req.md §2.3)。
 認証は Auth.js + GitHub OAuth + `@auth/supabase-adapter` が担い、Auth.js のデータは `next_auth` schema に保存される(req.md §30, §31)。
 
 ローカルスタックには既定で GoTrue（Supabase Auth を提供するコンポーネント。11章）が含まれる。
-dagdo ではこれを使わないため、次の 2 案のいずれかとする（提案。どちらを採るかは未確定）。
+dagdo はこれを認証主体として使わないが、無効化はせず既定のまま起動させる。
+`supabase/config.toml:155-156` の `[auth]` セクションは `enabled = true` である。
 
-- **案 A: 無効化する**。`config.toml` の `[auth]` セクションに `enabled = false` を設定し、ローカルスタックから GoTrue コンテナを起動しない。用途のないコンポーネントを起動しないことで、ローカル環境の構成を実際の認証経路（Auth.js 経由）に一致させられる
-- **案 B: 既定のまま放置する**。GoTrue は起動するが、Auth.js も RLS の `next_auth.uid()` もこれを参照しないため、動作上は無害である。将来 Supabase Auth を部分的に使う可能性を残せる
+無効化しない理由は、無効化して得られるものが「使わないコンテナを起動しない」というローカル環境の資源節約に限られ、`config.toml` を既定から離す変更のコストに見合わないためである。
+GoTrue は起動するが、Auth.js も RLS の `next_auth.uid()` もこれを参照しない。
 
-いずれの案でも、RLS Policy の `user_id = next_auth.uid()`(req.md §40) や RPC の `to authenticated` 権限(req.md §58) は GoTrue の発行する JWT ではなく、`docs/auth-design.md` 第5章が定める Custom JWT を前提にしている。
+RLS Policy の `user_id = next_auth.uid()`(req.md §40) や RPC の `to authenticated` 権限(req.md §58) は、GoTrue の発行する JWT ではなく `docs/auth-design.md` 第5章が定める Custom JWT を前提にしている。
 GoTrue の有効・無効は dagdo の認証フローに影響しない。
 
 ### 4.3 その他
 
-ポート番号（`api.port`、`db.port`、`studio.port` 等）は `supabase init` の既定値を維持する（提案）。
+ポート番号（`api.port`、`db.port`、`studio.port` 等）は `supabase init` の既定値を維持する。
 複数の Supabase プロジェクトをローカルで併用する予定がなく、ポート競合を避ける必要性が現時点でないためである。
 
 ---
 
 ## 5. migration ファイル構成
 
-migration は意味単位で 6 本に分割する（2026-08-08 ユーザー確定の分割方針の具体化）。
-各ファイル名は `supabase migration new <name>` が生成するタイムスタンプ prefix（`<timestamp>_`）に、次の意味名を続けたものとする。
+migration は意味単位で分割する（2026-08-08 ユーザー確定の分割方針）。
+現在 7 本ある。
+ファイル名は `supabase migration new <name>` が生成するタイムスタンプ prefix に意味名を続けたものである。
 
 | 順序 | ファイル名（意味部分） | 内容 | 根拠 |
 | --- | --- | --- | --- |
-| 1 | `next_auth_schema` | `next_auth` schema、`users` / `accounts` / `sessions` / `verification_tokens`、`next_auth.uid()` | req.md §31, §35 |
-| 2 | `tasks_and_dependencies` | `tasks` / `task_dependencies` テーブルの DDL、インデックス | req.md §37, §38, §67 |
+| 1 | `next_auth_schema` | `next_auth` schema、`users` / `accounts` / `sessions` / `verification_tokens`、`next_auth.uid()`、`authenticated` / `anon` への GRANT | req.md §31, §35、`docs/auth-design.md` §4.4 |
+| 2 | `tasks_and_dependencies` | `tasks` / `task_dependencies` テーブルの DDL、インデックス 5 本 | req.md §37, §38, §67 |
 | 3 | `app_tasks_view` | `public.app_tasks` View（`effective_parent_id` / `sort_path` / `is_blocked`、`security_invoker`） | req.md §44〜46 |
-| 4 | `triggers` | 親子 cycle Trigger、dependency cycle Trigger、blocked completion Trigger、`updated_at` 更新 Trigger | req.md §47〜50 |
+| 4 | `triggers` | 親子 cycle Trigger、dependency cycle Trigger、blocked completion Trigger、`updated_at` 更新 Trigger、SQLSTATE `ET001`〜`ET007` の割り当て | req.md §47〜50, §66 |
 | 5 | `rpc_functions` | RPC 5 種（`move_task` / `reorder_tasks` / `add_task_dependency` / `restore_task` / `permanently_delete_task`）、execute 権限の revoke/grant | req.md §52〜58 |
-| 6 | `rls_policies` | `tasks` / `task_dependencies` の RLS 有効化と Policy | req.md §40〜43 |
+| 6 | `rls_policies` | `tasks` / `task_dependencies` の RLS 有効化と Policy、`authenticated` へのテーブル GRANT | req.md §40〜43、`docs/db-design.md` 第10章 |
+| 7 | `reorder_tasks_exclude_deleted_siblings` | `reorder_tasks` を論理削除済みの兄弟を対象外とする定義へ置き換える | `docs/db-design.md` 第12.3節、Issue #21 |
 
-この順序は依存関係の順序でもある。
+1 から 6 の順序は依存関係の順序でもある。
 `app_tasks` View は `tasks` テーブルを参照するため 2 の後でなければ作成できず、Trigger は `tasks` / `task_dependencies` の列変更を対象にするため同様に 2 の後、RPC は Trigger が保証する不変条件（cycle 禁止・blocked completion 禁止）に依拠する設計（req.md §53, §54）のため 4 の後に置く。
+
+7 は 1 から 6 の初期構築とは性質が異なり、既存の関数定義を差し替える変更履歴である。
+5 のファイルを直接書き換えず新しい migration を足しているのは、`supabase db push` で hosted へ反映済みの migration を後から編集すると履歴の整合が崩れるためである（2.1節）。
 
 ### 5.1 各ファイルの分割理由
 
-**1. next_auth_schema**：`@auth/supabase-adapter` が要求する公式スキーマ定義を、dagdo 自身の migration として管理する（提案）。
+**1. next_auth_schema**：`@auth/supabase-adapter` が要求する公式スキーマ定義を、dagdo 自身の migration として管理する。
 理由は次の 2 点である。
 
 - ローカル再現性: `supabase db reset` だけでローカル環境に `next_auth` schema を含む DB 全体を再現できる。Adapter 側のインストールや Dashboard 操作に依存させない
 - 履歴管理: `next_auth` schema に対する将来的な変更（Adapter のバージョンアップに伴うスキーマ差分など）を、dagdo 自身の migration 履歴として `git log` から追跡できる
 
-この migration の中身は `@auth/supabase-adapter` が要求する公式の schema 定義（`next_auth` schema 作成、4 テーブル、`next_auth.uid()` 関数）をそのまま用いる。
-具体的なテーブル定義（カラム名・型）は Adapter のバージョンに紐づくため、実装時に Adapter が要求する定義を確認して migration へ反映する。
+この migration の中身は `@auth/supabase-adapter` が要求する schema 定義（`next_auth` schema 作成、4 テーブル、`next_auth.uid()` 関数）を取り込んだものである。
+Adapter は npm パッケージとして SQL を配布しないため、この取り込みは必須である（`docs/auth-design.md` §4.2）。
+
+取り込んだ定義に対して dagdo 側で追加しているのは、`authenticated` / `anon` ロールへの `next_auth` schema の `usage` と `next_auth.uid()` の `execute` である（`docs/auth-design.md` §4.4）。
+Adapter が公開する定義は Adapter 自身（`service_role` 経由）の利用のみを想定しており、RLS Policy から `next_auth.uid()` を呼ぶ構成には足りないためである。
 
 **2. tasks_and_dependencies**：`tasks` テーブルと `task_dependencies` テーブルの DDL は `req.md` から無改変で引用する。
 
@@ -244,7 +255,8 @@ create table public.task_dependencies (
 | `task_dependencies(user_id, task_id)` | **不採用** | PRIMARY KEY `(user_id, task_id, depends_on_task_id)` の先頭 2 列と一致し、既存の PK インデックスで代替できるため重複となる |
 | `task_dependencies(user_id, depends_on_task_id)` | 採用 | PK のインデックスは `(user_id, task_id, ...)` 順であり、`depends_on_task_id` を条件に含めた検索（依存元の逆引き）には別途インデックスが要る |
 
-`task_dependencies(user_id, task_id)` を不採用とした判断は、req.md §67 が明示する「実際にはPRIMARY KEYやUNIQUE制約で既に生成されるindexとの重複を確認した上で作成する」という指示（提案としての具体化）に基づく。
+`task_dependencies(user_id, task_id)` を不採用とした判断は、req.md §67 が明示する「実際にはPRIMARY KEYやUNIQUE制約で既に生成されるindexとの重複を確認した上で作成する」という指示に基づく。
+採用結果の一覧は `docs/db-design.md` 第15.1節にもある。
 
 **3. app_tasks_view**：`public.app_tasks` View を単独の migration として切り出す。
 理由は、View がテーブル本体の構造（1）とは異なる「読み取り専用の派生ロジック」というレイヤーであり、View の定義変更（例えば `sort_path` の算出方法の見直し）が将来単独で発生した際に、この migration だけを見ればレビューできるようにするためである。
@@ -257,11 +269,16 @@ RPC は複数行更新を 1 トランザクションにまとめる層であり(
 そのため Trigger（4）より後に置く。
 execute 権限の revoke/grant（req.md §58）も同じ migration に含める。RPC 本体の定義と権限設定を別ファイルへ分離すると、「関数は存在するが権限が付与されていない」状態が migration 間で一時的に生じうるため、1 つの migration 内で完結させる。
 
-**6. rls_policies**：RLS の有効化と Policy を最後に置く。
+**6. rls_policies**：RLS の有効化と Policy を初期構築の最後に置く。
+`authenticated` ロールへのテーブル GRANT も同じファイルに含める。
+Policy は行フィルタであり、それ単体ではテーブルへのアクセス権限を与えないため、両者を分けると「Policy はあるが権限が無い」状態が migration 間で生じるためである（`docs/db-design.md` 第10章）。
+
+**7. reorder_tasks_exclude_deleted_siblings**：`reorder_tasks` の定義を差し替える。
+`create or replace function` で 5 のファイルの定義を上書きするため、`supabase db reset` 後の最終状態はこのファイルの内容になる。
 
 ### 5.2 RLS を最後にする順序の意図
 
-RLS を最後に配置する意図は、開発初期段階で `psql` や Supabase Studio から素の `tasks` / `task_dependencies` に対して動作確認を行いやすくする点にある（提案）。
+RLS を最後に配置する意図は、開発初期段階で `psql` や Supabase Studio から素の `tasks` / `task_dependencies` に対して動作確認を行いやすくする点にある。
 RLS が未設定の間は、Custom JWT や `authenticated` ロールへの切り替えを用意しなくても、テーブル構造・View・Trigger・RPC の動作を確認できる。
 
 ただし、これは「Trigger より先に RLS を有効化すると危険である」という意味ではない。
@@ -269,8 +286,11 @@ Trigger が保証する不変条件（cycle 禁止・blocked completion 禁止�
 同様に、cross-user relation の禁止は複合 FK（`tasks_parent_same_user_fkey` 等、req.md §37, §38）が担っており、これも RLS とは独立に機能する(`docs/db-design.md` 第10.2章)。
 RLS の順序は、あくまでローカル開発時の検証しやすさに関する運用上の判断であり、DB としての安全性は 1〜5 の migration だけで完結している。
 
-`supabase db reset` で再生された直後の DB は 1〜6 すべてを適用済みの状態になるため、本番相当のスキーマとローカル検証時のスキーマが乖離することはない。
+`supabase db reset` で再生された直後の DB は 1〜7 すべてを適用済みの状態になるため、本番相当のスキーマとローカル検証時のスキーマが乖離することはない。
 順序はあくまで migration ファイルという「変更履歴の見せ方」の話であり、最終状態には影響しない。
+
+7 が 6 より後にあることで、`reorder_tasks` の再定義は RLS 有効化の後になる。
+`create or replace function` は `pg_proc` の行を置き換えるだけで ACL を引き継ぐため、5 で設定した execute 権限の revoke/grant は 7 の後も保たれる（`supabase/migrations/20260808000007_reorder_tasks_exclude_deleted_siblings.sql:96`）。
 
 ---
 
@@ -284,7 +304,7 @@ seed data は `supabase/seed.sql` に定義し、`supabase db reset` のロー�
 `tasks.user_id` は `next_auth.users(id)` への FK である(req.md §37, §32)。
 そのため `tasks` へ seed データを投入するには、先に `next_auth.users` へ参照先となる行が存在している必要がある。
 
-`next_auth.users` へ固定 UUID の dev ユーザーを 1 件挿入する（提案）。
+`next_auth.users` へ固定 UUID の dev ユーザーを 1 件挿入する。
 具体的なカラム構成は 5.1節の migration 1（`next_auth_schema`）が採用する `@auth/supabase-adapter` 公式スキーマに従うが、少なくとも `id` と、`name` / `email` に相当する表示用のカラムへ値を入れる想定とする。
 
 ### 6.2 GitHub OAuth ログイン済みユーザーとの関係
@@ -292,19 +312,21 @@ seed data は `supabase/seed.sql` に定義し、`supabase db reset` のロー�
 ローカルで実際に GitHub OAuth ログインを行うと、`next_auth.users` にはログインした実ユーザーの行が別途作成される。
 この実ユーザーの `id` は dev ユーザーの固定 UUID とは一致しないため、seed data（dev ユーザー所有）と実ログインユーザーのタスクは別ユーザーのデータとして扱われ、RLS 上も混ざらない(req.md §40)。
 
-これに対する扱いは次の 2 案のいずれかとする（提案。どちらを採るかは未確定）。
+seed データを実ログインユーザーの画面で見たい場合の扱いは、次のいずれかを開発者が選ぶ。
+本文書はどちらかを既定として規定しない。
 
-- **案 A: dev ユーザーの割り切り**。GitHub OAuth ログインを行わず、Custom JWT の `sub` に dev ユーザーの固定 UUID を直接指定して Todo アプリ用の Supabase client を生成し、動作確認する。UI 開発・pgTAP 以外の手動確認を、実際の GitHub ログインフローを介さずに素早く行える
-- **案 B: 実ログインユーザーへの付け替え**。ローカルで GitHub OAuth ログインを行った後、`psql` で `tasks.user_id` と `task_dependencies.user_id` を dev ユーザーの固定 UUID から実ログインユーザーの `id` へ一括更新する。ログインフローを含めた一気通貫の確認ができる
+- **dev ユーザーのまま扱う**。GitHub OAuth ログインを行わず、Custom JWT の `sub` に dev ユーザーの固定 UUID を直接指定して Todo アプリ用の Supabase client を生成し、動作確認する。UI 開発・pgTAP 以外の手動確認を、実際のログインフローを介さずに素早く行える
+- **実ログインユーザーへ付け替える**。ローカルで GitHub OAuth ログインを行った後、`psql` で `tasks.user_id` と `task_dependencies.user_id` を dev ユーザーの固定 UUID から実ログインユーザーの `id` へ一括更新する。ログインフローを含めた一気通貫の確認ができる
 
-いずれの案も、`docs/auth-design.md` 第10章が未決事項として挙げる「ローカル Supabase 環境での認証確認手順（ローカル起動した Supabase に対して GitHub OAuth のコールバックをどう到達させるか）」と関連するため、最終的な採否はその検討と合わせて確定する。
+ローカルでの GitHub OAuth ログインそのものの手順は `docs/github-oauth-setup.md` 第6章が確定させている。
+ローカル用の OAuth App を dev 用として別に作成し、コールバック URL を `http://localhost:3000/api/auth/callback/github` とする方式である（同 第3章）。
 
 ### 6.3 サンプルデータ
 
 サンプルデータは UI モック検討時に用いたデータをそのまま再現する（2026-08-08 ユーザー確定）。
 元データは「Todoアプリ開発」（依存連鎖・fan-in を含む）、「家のこと」、単独タスク、ゴミ箱内 1 件から成る、状態パターンを網羅したセットである。
 
-`due_date` / `completed_at` / `deleted_at` は `current_date` 基準の相対値で記述する（提案）。
+`due_date` / `completed_at` / `deleted_at` は `current_date` 基準の相対値で記述する。
 理由は、これらの値をハードコードされた絶対日付（例えば `2026-08-08`）で記述すると、`supabase db reset` を実行した日によって「今日」「期限切れ」といった状態パターンが崩れてしまうためである。
 相対値であれば、seed が何日に流されても、期限切れ・今日期日・将来期日というパターンが常に保たれる。
 
@@ -339,7 +361,7 @@ seed data は `supabase/seed.sql` に定義し、`supabase db reset` のロー�
 
 ### 6.4 固定 UUID を使う理由
 
-各タスクおよび dev ユーザーの `id` には、ハードコードされた固定 UUID を用いる（提案）。
+各タスクおよび dev ユーザーの `id` には、ハードコードされた固定 UUID を用いる。
 `gen_random_uuid()` の既定値に任せず明示的に UUID リテラルを指定する。
 
 理由は、テスト・デバッグでの参照容易性である。
@@ -356,12 +378,24 @@ pgTAP は PostgreSQL の関数として実行される TAP（Test Anything Proto
 ### 7.1 supabase/tests/ の構成
 
 `supabase test db` は `supabase/tests/` 配下の `*.sql` ファイルを、使い捨てのテスト用 DB に対して実行する。
-このテスト用 DB は `supabase/migrations/` を全件適用した状態から作られるため、pgTAP テストは 5章で確定した 6 本の migration がすべて適用済みであることを前提にできる。
+このテスト用 DB は `supabase/migrations/` を全件適用した状態から作られるため、pgTAP テストは 5章の 7 本の migration がすべて適用済みであることを前提にできる。
 `seed.sql`（6章）はテスト用 DB には適用されないため、pgTAP テストはテストファイル自身の中で必要なテストデータを `INSERT` する。
+
+現在 7 ファイル・44 件のテストケースがある。
+
+| ファイル | `plan()` | 主な対象 |
+| --- | --- | --- |
+| `001_parent_cycle.test.sql` | 4 | 親子 cycle Trigger（11.1節相当） |
+| `002_dependency_cycle.test.sql` | 4 | dependency cycle Trigger |
+| `003_blocked_completion.test.sql` | 4 | blocked completion Trigger と依存 edge 削除による解除 |
+| `004_restore.test.sql` | 5 | `restore_task` と復元後の `is_blocked` |
+| `005_cross_user_isolation.test.sql` | 4 | 複合 FK による cross-user relation の禁止 |
+| `006_app_tasks_view.test.sql` | 10 | `app_tasks` View の 3 派生値（7.4節） |
+| `007_reorder_tasks.test.sql` | 13 | `reorder_tasks` の slot 使い回しと検証（migration 7） |
 
 ### 7.2 req.md §74 の 7 シナリオとテストファイルの対応
 
-req.md §74 が重点テスト項目として挙げる 7 シナリオを、次の 6 ファイルへ対応づける（提案）。
+req.md §74 が重点テスト項目として挙げる 7 シナリオを、次のとおり対応づける。
 
 | # | req.md §74 のシナリオ | テストファイル | テストケース概要 |
 | --- | --- | --- | --- |
@@ -373,7 +407,10 @@ req.md §74 が重点テスト項目として挙げる 7 シナリオを、次�
 | 6 | 別ユーザーのtaskへdependencyを張れない | `005_cross_user_isolation.test.sql` | ユーザー甲のタスクから、ユーザー乙のタスクへの `task_dependencies` の INSERT が拒否されることを確認する |
 | 7 | 削除済みノードを含めてもcycleを生成できない | `001_parent_cycle.test.sql` / `002_dependency_cycle.test.sql` | 論理削除済みのノードを経路に含む親子関係・依存関係についても、cycle となる変更が拒否されることを確認する（req.md §25 が定める「cycle判定ではdeleted_atを考慮しない」の検証） |
 
-`001_parent_cycle.test.sql` には、シナリオ 7 の親子関係側に加えて、自己参照禁止（`tasks_not_own_parent`、req.md §37）や単純な多階層 cycle（A→B→C→A）の拒否も含める（提案）。
+`001_parent_cycle.test.sql` には、シナリオ 7 の親子関係側に加えて、自己参照禁止（`tasks_not_own_parent`、req.md §37）や単純な多階層 cycle（A→B→C→A）の拒否も含める。
+
+req.md §74 が挙げていないものとして、`006_app_tasks_view.test.sql`（7.4節）と `007_reorder_tasks.test.sql` がある。
+後者は migration 7（5章）が定める slot 使い回しの並べ替えと、`p_ordered_task_ids` の検証（件数不一致・重複・他グループの ID に対する `INVALID_PARENT`）を対象とする。
 
 5 と 6 について、これらは `docs/db-design.md` 第10.2章が述べる通り複合 FK（`tasks_parent_same_user_fkey`、`task_dependency_task_fkey`、`task_dependency_depends_on_fkey`）によって保証される制約である(req.md §39)。
 複合 FK は RLS の有効・無効やテスト実行ロールに関わらず常に評価されるため、`005_cross_user_isolation.test.sql` はテスト実行ロールを切り替えずに（後述 7.3節の役割切替を伴わずに）実行できる。
@@ -383,20 +420,27 @@ req.md §74 が重点テスト項目として挙げる 7 シナリオを、次�
 `supabase test db` がテストを実行する際のロールは、既定では migration の適用や `INSERT` を自由に行える強い権限を持つ。
 これは RLS を素通りする（RLS が影響しない）ロールであることが一般的であり、そのままでは「RLS Policy が他ユーザーの行を見せない」ことそのものを検証できない。
 
-RLS Policy（`to authenticated`、`user_id = next_auth.uid()`、req.md §40〜43）の動作そのものを検証したい場合、pgTAP テスト内で次の 2 点を行う必要がある（概念レベル。詳細は未決事項として10章に置く）。
+RLS Policy（`to authenticated`、`user_id = next_auth.uid()`、req.md §40〜43）の対象ロールで実行したい場合は、テストトランザクション内で次の 2 行を書く。
 
-1. **ロールの切替**：`SET LOCAL ROLE authenticated;` 等によって、RLS の対象ロールへ切り替える
-2. **JWT クレームの設定**：Supabase Data API が本来リクエスト毎に設定する JWT クレーム相当の情報（`docs/auth-design.md` 第5章の Custom JWT の `sub` / `role`）を、テストトランザクション内の設定値として再現し、`next_auth.uid()` がテスト対象のユーザー UUID を返すようにする
+```sql
+set local role authenticated;
+set local request.jwt.claims = '{"sub":"50000000-0000-0000-0000-00000000000a","role":"authenticated"}';
+```
 
-この 2 点目の具体的な設定方法（参照する設定値の名前、`next_auth.uid()` がどこからその値を読むか）は、5.1節で述べた `next_auth_schema` migration が採用する `@auth/supabase-adapter` 公式スキーマの実装に依存する。
-本文書ではこれを未決事項（10章）とし、実装時に `next_auth.uid()` の定義を確認したうえで確定させる。
+1 行目でロールを切り替え、2 行目で Supabase Data API が本来リクエスト毎に設定する JWT クレーム相当を再現する。
+`next_auth.uid()` は `request.jwt.claim.sub` と `request.jwt.claims` の 2 通りを `coalesce` で試すため（`docs/auth-design.md` §4.2）、JSON 全体を `request.jwt.claims` へ入れる後者の形で解決する。
+`set local` にしているのは、pgTAP のテストがトランザクション内で実行され、終了時に自動で元へ戻るためである。
 
-なお、7.2節で述べた通りシナリオ 5・6（cross-user relation の禁止）は複合 FK が担うため、この役割切替を必要としない。
-役割切替が必要になるのは、RLS Policy の SELECT/INSERT/UPDATE/DELETE それぞれの条件（req.md §41〜43）を直接検証する追加テストを書く場合である。
+`005_cross_user_isolation.test.sql:25-26` がこの 2 行をそのまま使う。
+`004_restore.test.sql:46` と `007_reorder_tasks.test.sql:63` はロールを切り替えず `request.jwt.claims` だけを設定する。
+`restore_task` / `reorder_tasks` が `SECURITY INVOKER` であり内部で `next_auth.uid()` を参照するため、RLS の行フィルタ自体を検証しない場合でもクレームの設定は要るからである。
 
-### 7.4 提案: View の派生値検証テスト
+7.2節で述べた通り、シナリオ 5・6（cross-user relation の禁止）そのものは複合 FK が担うため、ロール切替に依存しない。
+`005` がロールを切り替えているのは、実際のアプリ経路に近い形で検証するためである。
 
-req.md §74 が明示する 7 シナリオに加えて、`app_tasks` View（req.md §44〜46）が算出する 3 つの派生値についても検証する（提案）。
+### 7.4 View の派生値検証テスト
+
+req.md §74 が明示する 7 シナリオに加えて、`app_tasks` View（req.md §44〜46）が算出する 3 つの派生値についても検証する。
 
 `006_app_tasks_view.test.sql` として、次を検証する。
 
@@ -410,7 +454,7 @@ req.md §74 が明示する 7 シナリオに加えて、`app_tasks` View（req.
 
 ## 8. 型生成フロー
 
-migration を変更した後は、必ず TypeScript 型を再生成する（提案。運用ルールとして明示する）。
+migration を変更した後は、必ず TypeScript 型を再生成する（運用ルールとして明示する）。
 
 ```text
 supabase db reset
@@ -430,7 +474,7 @@ src/lib/supabase/database.types.ts を上書き
 
 ## 9. 本番反映フロー
 
-V1 では `supabase link` + `supabase db push` による手動運用とし、CI は組まない（提案）。
+V1 では `supabase link` + `supabase db push` による手動運用とし、CI は組まない。
 
 ```text
 supabase link --project-ref <hosted プロジェクトの参照 ID>
@@ -448,15 +492,18 @@ hosted プロジェクトの作成・`supabase link` に必要な認証情報の
 
 ## 10. 未決事項
 
-本文書は Supabase CLI ワークフロー、migration 構成、seed data、pgTAP テスト設計の大枠を定めるが、次の項目は実装時に確定させる。
+本文書は Supabase CLI ワークフロー、migration 構成、seed data、pgTAP テスト設計を定めるが、次の項目は決まっていない。
 
-- **hosted Supabase プロジェクトの作成・link**：`supabase link` に必要なプロジェクト作成手順、`project-ref` の管理方法は未確定とする
-- **JWT secret の取得と env 設定**：`SUPABASE_JWT_SECRET` の取得方法・legacy JWT secret と新方式（非対称鍵）の関係については `docs/auth-design.md` 第10章が既に未決事項として挙げており、本文書ではそちらを参照する
-- **`next_auth` schema の exposed schemas 設定（hosted 側）**：4.1節で述べたローカル `config.toml` の設定に対応する hosted 側の設定手順は、`docs/auth-design.md` 第10章の未決事項と重複するためそちらを参照する
-- **pgTAP での RLS テスト実装詳細**：7.3節で述べた「ロール切替」「JWT クレーム相当の設定」の具体的な SQL 文（設定する値の名前、`next_auth.uid()` が参照する実装）は、`next_auth_schema` migration（5.1節）が採用する Adapter 公式スキーマの実装を確認したうえで確定させる
-- **CI/CD 化**：9章で述べた手動 `supabase db push` 運用を、将来 CI 経由の自動反映へ移行するかどうかは未確定とする。移行する場合、pgTAP テスト（7章）を CI のゲートに含めるかどうかも合わせて検討する
-- **backup 方針**：hosted Supabase プロジェクトのバックアップ取得・復元方針は未確定とする
-- **seed data の dev ユーザー運用**：6.2節で挙げた案A（dev ユーザーの割り切り）と案B（実ログインユーザーへの付け替え）のどちらを採るかは、`docs/auth-design.md` 第10章の「ローカル Supabase 環境での認証確認手順」の検討と合わせて確定する
+- **CI/CD 化**：9章の手動 `supabase db push` 運用を CI 経由の自動反映へ移行するかどうかは決めていない。移行する場合、pgTAP テスト（7章）を CI のゲートに含めるかどうかも合わせて検討する
+- **backup 方針**：hosted Supabase プロジェクトのバックアップ取得・復元方針は決めていない
+- **RLS Policy 自体の網羅的なテスト**：7.3節のロール切替の書き方は確立しているが、SELECT / INSERT / UPDATE / DELETE それぞれの条件（req.md §41〜43）を直接検証するテストは書いていない。現状の `005` は複合 FK による分離の検証にとどまる
+- **`max_rows` の扱い**：`config.toml:18` の `max_rows = 1000` を引き上げるかどうかは決めていない（`docs/db-design.md` 第15.2節）
+
+次の項目は本文書の姉妹文書が解決している。
+
+- **hosted Supabase プロジェクトの作成・link**：`docs/deploy.md` 第4章・第7章
+- **JWT secret の取得と env 設定**：`docs/deploy.md` 第6章・第11章
+- **`next_auth` schema の exposed schemas 設定（hosted 側）**：`docs/deploy.md` 第5章
 
 ---
 
@@ -478,11 +525,11 @@ hosted プロジェクトの作成・`supabase link` に必要な認証情報の
 
 **config.toml**：`supabase init` が生成する、ローカルスタックの設定ファイル。`[api]` セクションの `schemas` に `next_auth` を追加する等、dagdo 固有の設定を加える（4章）。
 
-**GoTrue**：Supabase Auth を提供するコンポーネント。dagdo では認証主体として使用せず(req.md §2.3)、ローカルスタックでは無効化するか、既定のまま放置するかを未確定の提案として扱う（4.2節）。
+**GoTrue**：Supabase Auth を提供するコンポーネント。dagdo では認証主体として使用しないが(req.md §2.3)、ローカルスタックでは既定のまま起動させる（4.2節）。
 
 **Data API（PostgREST）**：Supabase が PostgreSQL の前段に提供する REST API 層。`@auth/supabase-adapter` や Todo アプリの Server Action は、いずれもこの Data API 経由で PostgreSQL へアクセスする(`docs/auth-design.md` 第4.3節)。
 
-**`next_auth.uid()`**：Custom JWT の `sub` クレームから Auth.js user UUID を解決する、`@auth/supabase-adapter` が提供する SQL 関数(req.md §35)。RLS Policy の基本条件 `user_id = next_auth.uid()` の根拠になる(req.md §40)。
+**`next_auth.uid()`**：Custom JWT の `sub` クレームから Auth.js user UUID を解決する SQL 関数(req.md §35)。定義は migration 1（5.1節）が持つ。RLS Policy の基本条件 `user_id = next_auth.uid()` の根拠になる(req.md §40)。
 
 **Custom JWT**：Next.js Server Action から Supabase Data API へアクセスする際に発行する短命 JWT。詳細は `docs/auth-design.md` 第5章。
 
@@ -491,6 +538,7 @@ hosted プロジェクトの作成・`supabase link` に必要な認証情報の
 ---
 
 対象リポジトリ: dagdo
-対象コミット: 1b82bda
+対象コミット: a9b61ed
 作成日: 2026-08-08
+更新日: 2026-08-13
 生成者: Claude Code

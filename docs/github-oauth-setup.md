@@ -1,17 +1,16 @@
 # dagdo GitHub OAuth App セットアップ手順書
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 4f1fbe3
+- 対象コミット: a9b61ed
 - 作成日: 2026-08-09
+- 更新日: 2026-08-13
 - 生成者: Claude Code
 
 本文中、`docs/auth-design.md` に根拠を持つ記述には `(auth-design.md §NN)` を付ける。
-それ以外の記述は本手順書が下す確定事項または提案である。
-本手順書が確定させる事項は「確定事項」と明記する。
-未確定のまま残す事項があれば「未確定」と明記する。
+それ以外の記述は本手順書が下す判断であり、そのうち運用の分岐を決めているものは「確定事項」と明記する。
 
 本文書は `docs/auth-design.md` の補完文書である。
-同書 第10章が未決事項として残していた「GitHub OAuth App の dev/prod 分離運用」と「ローカル Supabase 環境での認証確認手順」の 2 項目を、本文書で確定させる。
+GitHub OAuth App の dev/prod 分離運用（第3章）と、ローカル Supabase 環境での認証確認手順（第6章）を本文書が定める。
 
 ## 目次
 
@@ -113,15 +112,27 @@ GitHub の Developer settings では「GitHub Apps」と「OAuth Apps」が隣�
 
 ## 5. .env.local への設定
 
-`.env.local` の `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` を、前章で取得した dev 用 OAuth App の Client ID / Client Secret に差し替える(`.env.example` が定める変数名に対応する)。
+`.env.local` は `make setup`（または `make env-local`）が `scripts/setup-env-local.sh` 経由で生成する。
+このとき `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` の 2 行は**先頭に `#` が付いたコメントの状態で書き出される**(`scripts/setup-env-local.sh:49-50`)。
+
+```text
+# GitHub ログインに必要 (docs/github-oauth-setup.md の手順で OAuth App を作成後、
+# コメントを外して実値を設定する。コメントのままなら未設定として扱われる)
+#AUTH_GITHUB_ID=
+#AUTH_GITHUB_SECRET=
+```
+
+前章で取得した dev 用 OAuth App の値を設定するには、この 2 行の `#` を外して値を書く。
 
 ```text
 AUTH_GITHUB_ID=<dev 用 OAuth App の Client ID>
 AUTH_GITHUB_SECRET=<dev 用 OAuth App の Client Secret>
 ```
 
-`.env.local` は `.gitignore` の対象であり、リポジトリにコミットされない。
-`AUTH_SECRET` / `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` / `SUPABASE_SECRET_KEY` / `SUPABASE_JWT_SECRET` など、GitHub OAuth 以外の環境変数は設定済みであることを前提とし、本文書では扱わない(`docs/auth-design.md` §8)。
+コメントを外さないままだと 2 変数は未設定として扱われ、`/login` からのログインが失敗する。
+
+`.env.local` は `.gitignore` の `.env*` に含まれ、リポジトリにコミットされない。
+`AUTH_SECRET` / `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` / `SUPABASE_SECRET_KEY` / `SUPABASE_JWT_SECRET` は同スクリプトがローカル Supabase の接続情報から自動で書き出すため、本文書では扱わない(`docs/auth-design.md` §8)。
 
 ---
 
@@ -129,18 +140,18 @@ AUTH_GITHUB_SECRET=<dev 用 OAuth App の Client Secret>
 
 次の順序で確認する。
 
-1. ローカル Supabase を起動する。
+1. ローカル Supabase の稼働を確認する。
 
     ```sh
-    npx supabase status
+    make db-status
     ```
 
-    `next_auth` schema を含むローカル Supabase が起動していない場合は、先に `npx supabase start` で起動する。
+    `next_auth` schema を含むローカル Supabase が起動していない場合は、先に `make db-start` で起動する。
 
 2. Next.js の開発サーバーを起動する。
 
     ```sh
-    npm run dev
+    make fe-dev
     ```
 
 3. ブラウザで `http://localhost:3000` を開く。
@@ -211,6 +222,7 @@ Vercel のデプロイ先ドメイン（カスタムドメインを含む）を�
 ---
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 4f1fbe3
+- 対象コミット: a9b61ed
 - 作成日: 2026-08-09
+- 更新日: 2026-08-13
 - 生成者: Claude Code
