@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createPendingCreateRegistry, mergeSettledRows, pruneConfirmedRenames, queuePendingTitle, recordRename, takePendingTitle } from "@/features/outline/lib/pending-create-registry";
+import { createPendingCreateRegistry, mergeSettledRows, pruneConfirmedRenames, queuePendingTitle, recordRename, resolveRowKey, takePendingTitle } from "@/features/outline/lib/pending-create-registry";
 import { isSameLogicalRow } from "@/features/task/lib/temp-id-renames";
 import type { AppTask } from "@/types/task";
 
@@ -138,5 +138,25 @@ describe("mergeSettledRows", () => {
         recordRename(registry, "temp-1", "real-1", row("real-1", "新規タスク"));
         pruneConfirmedRenames(registry, (realId) => realId === "real-1");
         expect(mergeSettledRows([row("task-1")], registry).map((task) => task.id)).toEqual(["task-1"]);
+    });
+});
+
+describe("resolveRowKey", () => {
+    it("対応が無ければ id をそのまま論理キーにする (サーバー由来の行)", () => {
+        const registry = createPendingCreateRegistry();
+        expect(resolveRowKey(registry.rowKeys, "task-1")).toBe("task-1");
+    });
+
+    it("settle 済みの行は、実 id で引いても最初の tempId を返す", () => {
+        const registry = createPendingCreateRegistry();
+        recordRename(registry, "temp-1", "real-1", undefined);
+        expect(resolveRowKey(registry.rowKeys, "real-1")).toBe("temp-1");
+    });
+
+    it("剪定の後も論理キーは変わらない (ここで変わると、その時点で行が作り直される)", () => {
+        const registry = createPendingCreateRegistry();
+        recordRename(registry, "temp-1", "real-1", undefined);
+        pruneConfirmedRenames(registry, () => true);
+        expect(resolveRowKey(registry.rowKeys, "real-1")).toBe("temp-1");
     });
 });

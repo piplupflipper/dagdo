@@ -208,7 +208,7 @@ src/
         keymap-help.ts              # テーブルからヘルプの表示セクションを導く (第 6.3 節)
         key-sequence.ts             # キーシーケンス表現のトークン分解・整形
         inline-title-edit.ts        # 行内タイトル編集の状態型と判定 (第 6.4 節)
-        pending-create-registry.ts  # tempId → 実 id の対応表・つなぎの行・保留タイトルのキュー
+        pending-create-registry.ts  # tempId → 実 id の対応表・つなぎの行・行の論理キー・保留タイトルのキュー
         pane-ratio.ts               # ペイン比率の clamp と localStorage 値の解釈
 
     task-detail/                    # 右ペイン上部・モバイル詳細シート
@@ -572,6 +572,12 @@ settle で id が実 id へ切り替わっても、一覧の側はしばらく�
 `OutlineShell` は木を組み立てる前に `mergeSettledRows`（`pending-create-registry.ts`）を通し、この窓を埋める。
 まだ生きている `tempId` の楽観行は実 id 名義に読み替え、楽観行も実 id の行も無くなった分は settle 時に預けたスナップショット（undo 履歴のために先読みしてある「作成直後の行」と同じもの）で埋める。
 実 id の行がサーバー由来の一覧に現れた時点で、対応表もスナップショットも剪定する。
+
+行の React `key` には、id ではなく「実 id → 最初の tempId」で解決した論理キーを使う（`resolveRowKey`）。
+id をそのまま `key` にすると、付け替えの瞬間に行のサブツリーが作り直される。
+行内タイトル編集中であれば `input` も作り直され、`attachInput`（第 6.4 節）が改めて `setSelectionRange` を行うためキャレットが `caret` の指定位置へ巻き戻る（Issue #62）。
+この対応（`rowKeys`）だけは剪定しない。剪定すればその時点で `key` が実 id へ戻り、避けたい作り直しがそこで起きるためである。
+保持量はページのセッション中に作成した行 1 件あたり 1 エントリに収まる。
 
 対応表の実体を `use-pending-create.ts` ではなく `OutlineShell` が持つのはこのためである。
 差し込みは木の組み立てより前に走る必要があり、木の組み立て後に呼ぶ `use-pending-create.ts` では間に合わない。
@@ -1191,7 +1197,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | ヘルプ表示セクションの導出 | `outline/lib/keymap-help.test.ts` |
 | キーシーケンスのトークン分解・整形 | `outline/lib/key-sequence.test.ts` |
 | 行内タイトル編集の状態判定 | `outline/lib/inline-title-edit.test.ts` |
-| tempId → 実 id の対応表と、settle 済みの行の差し込み | `outline/lib/pending-create-registry.test.ts` |
+| tempId → 実 id の対応表、settle 済みの行の差し込み、行の論理キー | `outline/lib/pending-create-registry.test.ts` |
 | ペイン比率の clamp と保存値の解釈 | `outline/lib/pane-ratio.test.ts` |
 | 表示用状態の導出（done / blocked / ready） | `task-detail/lib/task-status.test.ts` |
 | 依存操作のエラー文言 | `task-detail/lib/dependency-error.test.ts` |

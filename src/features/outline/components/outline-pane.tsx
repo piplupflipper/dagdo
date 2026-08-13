@@ -7,6 +7,7 @@ import { useRowRefs } from "@/features/outline/hooks/use-row-refs";
 import type { OutlineTreeRow } from "@/features/outline/lib/build-tree";
 import { computeDropResult, flattenForDnd, type ReparentResult, type SiblingReorderResult } from "@/features/outline/lib/flatten-for-dnd";
 import type { InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
+import { resolveRowKey } from "@/features/outline/lib/pending-create-registry";
 import type { AppTask, TaskDependency } from "@/types/task";
 
 type OutlinePaneProps = {
@@ -18,6 +19,12 @@ type OutlinePaneProps = {
     flashTaskId: string | null;
     /** 行内編集中のタスクとキャレット位置。編集していなければ null (docs/frontend-design.md §6.1) */
     inlineTitleEdit: InlineTitleEdit | null;
+    /**
+     * 実 id → 最初の tempId の対応 (`pending-create-registry.ts` の `rowKeys`)
+     *
+     * 行の React `key` をこれで解決し、settle の id 付け替えで行が作り直されないようにする (Issue #62)
+     */
+    rowKeys: ReadonlyMap<string, string>;
     onSelectCursor: (taskId: string) => void;
     onToggleCollapse: (taskId: string) => void;
     onToggleDone: (task: AppTask) => void;
@@ -58,6 +65,7 @@ export const OutlinePane = ({
     visualSelectedTaskIds,
     flashTaskId,
     inlineTitleEdit,
+    rowKeys,
     onSelectCursor,
     onToggleCollapse,
     onToggleDone,
@@ -106,7 +114,7 @@ export const OutlinePane = ({
                     <div className="min-w-0 flex-1 py-2 pr-3.5 pl-2.5" role="listbox" aria-label="タスク一覧" data-role="outline-tree">
                         {visibleRows.map((row) => (
                             <OutlineRow
-                                key={row.task.id}
+                                key={resolveRowKey(rowKeys, row.task.id)}
                                 row={row}
                                 registerRow={registerRow}
                                 isCursor={row.task.id === cursorTaskId}

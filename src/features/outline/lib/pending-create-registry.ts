@@ -2,7 +2,7 @@
  * `createSibling` (outline-shell.tsx) が生成する tempId の、settle 前後をまたいだ状態を持つ純ロジック (バグ修正)
  *
  * `createTask` の楽観 create は tempId (crypto.randomUUID()) の行を即時表示し、Server Action 成功後に
- * 実 id へ切り替える。この「切り替え」の間に起きる 2 つの問題を解くための材料をここへ集約する。
+ * 実 id へ切り替える。この「切り替え」の間に起きる次の問題を解くための材料をここへ集約する。
  *
  * 1. settle 時 (`setCursor(tempId → 実id)`) や revalidate 到着 (tempId 行 → 実 id 行) によるカーソル/行の
  *    id 変化を、outline-shell のレンダー時調整 (「カーソルが別の行へ移ったら／編集中の行が表示行から
@@ -19,16 +19,28 @@
  *    現れるのは RSC の再描画が届いてからだからである。この間に行が消えると、ストアの `setVisibleTaskIds` が
  *    「カーソルが可視行に無い」と見てカーソルを先頭行へ寄せ、その移動が行内編集を畳んでフォーカスを落とす。
  *    `recordRename` で実 id 名義のスナップショットを預かり、`mergeSettledRows` で一覧へ差し込んで窓を埋める
+ * 4. 付け替えで行の id が変わると、id を React の `key` にしている一覧は行を作り直す (Issue #62)。
+ *    行内編集中の `input` まで作り直され、キャレットが `caret` の指定位置へ巻き戻る。
+ *    `rowKeys` に「実 id → 最初の tempId」を残し、`resolveRowKey` が返す論理キーを `key` に使うことで、
+ *    付け替えをまたいで行の DOM 同一性を保つ
  */
 
 import type { AppTask } from "@/types/task";
 
-/** tempId → 実 id の対応表と、settle 済みで revalidate 未到着の行、settle 前に確定されたタイトルの保留キュー */
+/** tempId → 実 id の対応表と、settle 済みで revalidate 未到着の行、行の論理キー、settle 前に確定されたタイトルの保留キュー */
 export type PendingCreateRegistry = {
     /** settle 済みの create について、tempId から実 id への対応 (「同一論理行」の判定に使う) */
     renamedIds: Map<string, string>;
     /** settle 済みだが実 id の行がまだ一覧に現れていない create の行 (実 id 名義)。キーは実 id */
     settledRows: Map<string, AppTask>;
+    /**
+     * 実 id → その行に最初に採番した tempId (行の DOM 同一性を保つための論理キー、Issue #62)
+     *
+     * `renamedIds` や `settledRows` と違い、**剪定しない**。剪定するとその時点で `key` が実 id へ戻り、
+     * まさに避けたい再マウントがそこで起きるためである。保持量はページのセッション中に作成した
+     * 行 1 件あたり 1 エントリで、実用上の上限になる
+     */
+    rowKeys: Map<string, string>;
     /** settle 前に Enter/Esc で確定されたタイトル (tempId ごとに最新の 1 件だけを保持) */
     pendingTitles: Map<string, string>;
 };
@@ -37,21 +49,34 @@ export type PendingCreateRegistry = {
 export const createPendingCreateRegistry = (): PendingCreateRegistry => ({
     renamedIds: new Map(),
     settledRows: new Map(),
+    rowKeys: new Map(),
     pendingTitles: new Map(),
 });
 
 /**
- * create の settle。tempId → 実 id の対応と、revalidate 到着までのつなぎに使う行を記録する
+ * create の settle。tempId → 実 id の対応と、revalidate 到着までのつなぎに使う行、行の論理キーを記録する
  *
  * `row` は `createSibling` が undo 履歴のために先読みしている「作成直後の行」(実 id 名義) である。
  * 先読みに失敗した場合 (undefined) はつなぎの行を持てないだけで、対応表の記録は行う
  */
 export const recordRename = (registry: PendingCreateRegistry, tempId: string, realId: string, row: AppTask | undefined): void => {
     registry.renamedIds.set(tempId, realId);
+    registry.rowKeys.set(realId, tempId);
     if (row !== undefined) {
         registry.settledRows.set(realId, row);
     }
 };
+
+/**
+ * 行の React key に使う論理キーを引く (Issue #62)
+ *
+ * settle で行の id は tempId から実 id へ変わるが、React から見て同じ行であり続けてほしい。
+ * id をそのまま `key` にすると付け替えの瞬間に行のサブツリーが作り直され、行内編集中の `input` も
+ * 作り直されてキャレットが `caret` の指定位置へ巻き戻る。最初の tempId を通し番号として使うことで、
+ * 付け替えをまたいで `key` が変わらないようにする。
+ * create を経ていない行 (サーバー由来の行) は対応表に載らないので、自分の id がそのまま論理キーになる
+ */
+export const resolveRowKey = (rowKeys: ReadonlyMap<string, string>, taskId: string): string => rowKeys.get(taskId) ?? taskId;
 
 /**
  * 楽観適用後の一覧を、settle 済みの create が実 id 名義で並ぶ形に整える

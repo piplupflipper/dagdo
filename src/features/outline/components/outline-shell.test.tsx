@@ -140,7 +140,8 @@ describe("新規タスク", () => {
      * 修正前はここで一覧から行が消え、ストアの clamp がカーソルを先頭行へ寄せ、
      * その移動が行内編集を畳んでフォーカスを body へ落としていた
      */
-    it("作成直後にタイトルを編集していると、settle をまたいでもフォーカスと下書きが残る", async () => {
+    /** `o` で作成し、settle を保留にしたまま `i` でタイトルを編集し始める。戻り値は settle を起こす関数と編集中の input */
+    const createAndStartEditing = async (): Promise<{ settle: () => Promise<void>; input: HTMLElement }> => {
         let resolveCreate: ((result: { ok: true; data: { id: string } }) => void) | undefined;
         createTaskMock.mockImplementation(() => new Promise((resolve) => (resolveCreate = resolve)));
 
@@ -150,11 +151,20 @@ describe("新規タスク", () => {
         // 楽観行が描かれるまで待つ (createTask は保留のまま)
         await act(async () => {});
         fireEvent.keyDown(document, { key: "i" });
-        fireEvent.change(screen.getByRole("textbox", { name: "タイトルを行内編集" }), { target: { value: "編集中のタイトル" } });
+        const input = screen.getByRole("textbox", { name: "タイトルを行内編集" });
+        fireEvent.change(input, { target: { value: "編集中のタイトル" } });
 
-        await act(async () => {
-            resolveCreate?.({ ok: true, data: { id: "real-1" } });
-        });
+        const settle = async (): Promise<void> => {
+            await act(async () => {
+                resolveCreate?.({ ok: true, data: { id: "real-1" } });
+            });
+        };
+        return { settle, input };
+    };
+
+    it("作成直後にタイトルを編集していると、settle をまたいでもフォーカスと下書きが残る", async () => {
+        const { settle } = await createAndStartEditing();
+        await settle();
 
         const input = screen.getByRole("textbox", { name: "タイトルを行内編集" });
         expect(document.activeElement).toBe(input);
@@ -164,6 +174,20 @@ describe("新規タスク", () => {
         // 窓の中で確定したタイトルも実 id で保存へ流れる (行が一覧から消えていると tasksById で引けず、黙って捨てていた)
         fireEvent.keyDown(input, { key: "Enter" });
         await waitFor(() => expect(callServerForOpMock).toHaveBeenCalledWith({ type: "updateTitle", taskId: "real-1", title: "編集中のタイトル" }, expect.anything()));
+    });
+
+    /**
+     * 行の DOM 同一性 (Issue #62)
+     *
+     * 行の `key` を id にしていた頃は、settle の tempId → 実 id 付け替えで行のサブツリーごと作り直され、
+     * `input` も別の要素に差し替わっていた。フォーカスは callback ref が戻すが、キャレットは
+     * `caret` の指定位置へ巻き戻る。同じ要素であり続けることを見れば、その巻き戻りごと防げていると言える
+     */
+    it("settle をまたいでも行内編集の input は同じ要素のまま (行が作り直されない)", async () => {
+        const { settle, input } = await createAndStartEditing();
+        await settle();
+
+        expect(screen.getByRole("textbox", { name: "タイトルを行内編集" })).toBe(input);
     });
 });
 

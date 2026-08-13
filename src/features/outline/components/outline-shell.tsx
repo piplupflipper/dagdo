@@ -306,6 +306,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                         visualSelectedTaskIds={visualSelectedTaskIds}
                         flashTaskId={flashTaskId}
                         inlineTitleEdit={inlineTitleEdit}
+                        rowKeys={pendingCreate.rowKeys}
                         onSelectCursor={setCursor}
                         onToggleCollapse={toggleCollapsed}
                         onToggleDone={handleToggleDone}
