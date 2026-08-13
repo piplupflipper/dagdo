@@ -160,7 +160,7 @@ describe("空タイトル", () => {
 });
 
 describe("祖先へのキーイベント伝播", () => {
-    it("キー入力を祖先へ伝えない。行 (OutlineRow) の onKeyDown が Enter / Space を奪うため", () => {
+    it("編集中のキー入力を祖先へ伝えない (入力は input の中で完結させる)", () => {
         const onAncestorKeyDown = vi.fn();
         document.body.addEventListener("keydown", onAncestorKeyDown);
         const { input } = renderEditor();

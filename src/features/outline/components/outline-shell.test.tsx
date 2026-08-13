@@ -149,3 +149,46 @@ describe("行の操作", () => {
         await waitFor(() => expect(callServerForOpMock).toHaveBeenCalledWith({ type: "softDelete", taskId: "task-1" }, expect.anything()));
     });
 });
+
+/**
+ * カーソルと DOM のフォーカスのずれ (Issue #58)
+ *
+ * `Enter` → `Esc` の往復でフォーカスは行の要素に残る。その状態で `j` を押しても
+ * ストアの `cursorTaskId` が動くだけだったため、フォーカスが元の行に取り残されていた。
+ * キーは `document.activeElement` へ送る (document へ直接送ると行のローカルハンドラを通らず、
+ * 本来の伝播順 = React の委譲リスナ → document のハンドラ、を再現できない)
+ */
+describe("カーソル行とフォーカスの追従", () => {
+    /** カーソル行の `role="option"` 要素 (focusOutlineList と同じ探索対象) */
+    const cursorRow = (): HTMLElement | null => document.querySelector<HTMLElement>('[data-cursor="true"] [role="option"]');
+
+    /** `Enter` で説明の編集領域を開き、`Esc` で確定して一覧へフォーカスを戻す */
+    const editAndReturnToOutline = (): void => {
+        fireEvent.keyDown(document.activeElement ?? document, { key: "Enter" });
+        const editor = document.activeElement;
+        expect(editor?.tagName).toBe("TEXTAREA");
+        fireEvent.keyDown(editor ?? document, { key: "Escape" });
+    };
+
+    it("編集から戻った後の `j` でフォーカスもカーソル行へ移る", () => {
+        renderShell();
+        fireEvent.click(screen.getByText("最初のタスク"));
+        editAndReturnToOutline();
+        expect(document.activeElement).toBe(cursorRow());
+
+        fireEvent.keyDown(document.activeElement ?? document, { key: "j" });
+        expect(useOutlineStore.getState().cursorTaskId).toBe("task-2");
+        expect(document.activeElement).toBe(cursorRow());
+    });
+
+    it("編集から戻り `j` で移った先の `Enter` が、元の行へカーソルを戻さない", () => {
+        renderShell();
+        fireEvent.click(screen.getByText("最初のタスク"));
+        editAndReturnToOutline();
+        fireEvent.keyDown(document.activeElement ?? document, { key: "j" });
+
+        fireEvent.keyDown(document.activeElement ?? document, { key: "Enter" });
+        expect(useOutlineStore.getState().cursorTaskId).toBe("task-2");
+        expect(document.activeElement?.tagName).toBe("TEXTAREA");
+    });
+});

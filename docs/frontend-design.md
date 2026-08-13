@@ -787,7 +787,8 @@ blur 時に空文字だった場合は保存できないため取り消し扱い
 キー経由でこの状態に入ることはない（編集中はフォーカスが input にあり dispatcher が `isEditableTarget` で素通しする）が、折りたたみボタンのクリックのようにキーボード以外の経路があるため、カーソル移動による解除とは別に表示行の集合とも突き合わせる。
 
 キー入力は input のローカルハンドラで処理し、行や祖先へは伝播させない（`stopPropagation`）。
-行（`OutlineRow`）の `onKeyDown` が `Enter` / `Space` をカーソル選択として拾い `preventDefault` するため、そのままでは入力欄に空白を打てないためである。
+編集中の入力を、行のクリックを止めるのと同じ境界で input の中に閉じるためである。
+グローバル keymap の抑止そのものは `isEditableTarget`（第 6.2 節）が担っており、この `stopPropagation` には依存していない。
 IME 変換確定の `Enter` / `Esc` は `isComposing` を見て編集の確定・取り消しと取り違えない（`SearchOverlay` と同じ扱い）。
 
 ### 6.5 編集領域からの Esc によるフォーカス復帰
@@ -823,6 +824,24 @@ IME 変換確定の `Enter` / `Esc` は `isComposing` を見て編集の確定�
 `focusOutlineList` の呼び出しは、この抑止を外すための blur だけでは行われない「フォーカス位置を一覧側へ明示する」ことを目的としており、フォーカス復帰そのものは blur の時点で（抑止が外れる意味では）既に完了している。
 
 IME 変換確定中の `Esc`（`event.nativeEvent.isComposing`）は、いずれの編集領域でも第 6.2 節・第 6.4 節と同じ扱いで無視し、その編集領域の確定・取り消しのどちらとしても処理しない。
+
+### 6.6 カーソル行と DOM フォーカスの追従
+
+カーソル（ストアの `cursorTaskId`）と DOM のフォーカス位置は別物である。
+`j` / `k` はストアを書き換えるだけで、フォーカスは押した時点の要素に残る。
+一方 `focusOutlineList`（第 6.5 節）は行の要素（`role="option"`）へフォーカスを載せる。
+この 2 つが揃わないと「フォーカスは行 A、カーソルは行 B」というずれが残り、フォーカスリングがカーソルとは別の行に出たままになる（Issue #58）。
+
+`OutlineShell` は `cursorTaskId` の変化を見て、カーソル行へフォーカスを移す。
+移すのはフォーカスが行の要素にあるときだけで、それ以外（行内編集の `input`、`DetailPane` の `textarea`、ヘッダのボタン、`body`）からは奪わない。
+行内編集中の `input` は行の内側にあるが `role="option"` を持たないため、この条件で区別できる。
+奪ってはならない代表例が、`o` で作った行のタイトルを行内編集している最中の `createTask` の settle である（tempId → 実 id の付け替えで `cursorTaskId` が変わる。第 5.2 節）。
+
+行（`OutlineRow`）にキーボードのローカルハンドラは置かない。
+キーの担当は keymap テーブル（第 6.1 節）と、入力欄のローカルハンドラ（第 6.2 節が挙げる、`isEditableTarget` で dispatcher が素通しする文脈）の 2 つだけである。
+行の `onKeyDown` はそのどちらでもないのに NORMAL の `Enter` を「この行をカーソルにする」として拾っており、テーブルの `Enter`（`focusDetailEditor`）と担当が二重になっていた。
+フォーカスとカーソルがずれている間はこの二重の担当が衝突し、`Enter` がカーソルを古い行へ引き戻して編集領域を開けなくする（Issue #58）。
+行のクリック（`onClick` によるカーソル選択）はマウス操作の導線として残す。
 
 ---
 
@@ -1162,11 +1181,11 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | 同一論理行の付け替え判定 | `task/lib/temp-id-renames.test.ts` |
 | Asia/Tokyo 基準の日付整形と期限切れ判定 | `lib/date/timezone.test.ts` |
 | 行内タイトル編集のフォーカス遷移 | `outline/components/inline-title-editor.test.tsx` |
-| キー操作から Server Action までの結線 | `outline/components/outline-shell.test.tsx` |
+| キー操作から Server Action までの結線、カーソル行とフォーカスの追従（第 6.6 節） | `outline/components/outline-shell.test.tsx` |
 | 詳細ペインの編集状態の初期化 | `task-detail/components/detail-pane.test.tsx` |
 
 `components` 配下の 3 ファイルだけ `@testing-library/react` で描画して確かめる。
-フォーカスの遷移そのものが仕様である箇所（第 6.4 節）と、キー入力から Server Action の呼び出しまでの結線は、純関数の単体テストでは押さえられないためである。
+フォーカスの遷移そのものが仕様である箇所（第 6.4 節・第 6.6 節）と、キー入力から Server Action の呼び出しまでの結線は、純関数の単体テストでは押さえられないためである。
 
 E2E テストは実装しない（2026-08-13 の判断）。
 ブラウザ自動化の依存とローカル Supabase を要する実行環境を V1 では持たず、キーボード操作の結線は `outline-shell.test.tsx` が Server Action をモックして確かめる範囲に留める。

@@ -108,8 +108,10 @@ export const InlineTitleEditor = ({ value, caret, onDraftChange, onCommit, onCan
     };
 
     const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-        // 行の onKeyDown が Enter / Space をカーソル選択として拾い preventDefault してしまうため、行まで伝えない。
-        // document の keydown ハンドラ (useOutlineKeymap) は input にフォーカスがある時点で isEditableTarget により素通しする
+        // 編集中のキー入力は input の中で完結させ、行や祖先のハンドラへは伝えない (行のクリックを止める handleClick と同じ境界)。
+        // 行 (outline-row.tsx) の onKeyDown は Issue #58 で外したため、現在ここで奪われるキーは無い。
+        // グローバル keymap の抑止はこの stopPropagation ではなく、document の keydown ハンドラ (useOutlineKeymap) 側の
+        // isEditableTarget が担う (input にフォーカスがある間は手前で素通しする)
         event.stopPropagation();
         // IME 変換確定の Enter / Esc を編集の確定・取り消しと取り違えない (detail-pane.tsx / search-overlay.tsx と同じ扱い)
         if (event.nativeEvent.isComposing) {
