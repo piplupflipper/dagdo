@@ -30,4 +30,4 @@ GitHub ログインには OAuth App の設定が必要（[docs/github-oauth-setu
 
 - `make fe-dev` / `make fe-build` / `make fe-check` / `make fe-test` / `make fe-format` — Next.js アプリ
 - `make db-start` / `make db-reset` / `make db-test` / `make db-types` — ローカル Supabase
-- `make check` — 全品質ゲート（fe-check + fe-test + db-test）
+- `make check` — 全品質ゲート（fe-build + fe-check + fe-test + db-test）

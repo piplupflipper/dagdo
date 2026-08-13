@@ -86,4 +86,9 @@ db-push: ## migration を hosted Supabase へ反映する (要 supabase link。s
 ##@ 複合
 
 .PHONY: check
-check: fe-check fe-test db-test ## 全品質ゲート (fe-check + fe-test + db-test) を実行する
+# fe-build を先頭に置くのは、tsc が Next.js の生成する型に依存するためである。
+# src/app/layout.tsx の LayoutProps は .next/types/routes.d.ts に生成されるグローバル型で、
+# tsconfig.json の include が .next/types/**/*.ts を拾って解決している。
+# make setup はビルドを含まないため、fe-build を挟まないと clone 直後の fe-check が
+# TS2304 (Cannot find name 'LayoutProps') で落ちる (Issue #40)。
+check: fe-build fe-check fe-test db-test ## 全品質ゲート (fe-build + fe-check + fe-test + db-test) を実行する
