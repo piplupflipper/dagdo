@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OutlineShell } from "@/features/outline/components/outline-shell";
 import { useOutlineStore } from "@/store/outline-store";
@@ -121,9 +121,7 @@ describe("ヘッダのボタン", () => {
 
 describe("新規タスク", () => {
     it("createTask を呼び、settle 後にカーソルを実 id へ付け替える", async () => {
-        // 楽観行 (tempId) と settle 後の実 id を順に踏むので、最終値ではなく通過した値を記録して確かめる。
-        // (本番では createTask の revalidate で実 id の行がサーバー由来の一覧に現れるが、
-        //  Server Action を差し替えたこのテストでは楽観適用が巻き戻り、カーソルも先頭行へ戻る)
+        // 楽観行 (tempId) と settle 後の実 id を順に踏むので、最終値ではなく通過した値を記録して確かめる
         const cursorHistory: (string | null)[] = [];
         const unsubscribe = useOutlineStore.subscribe((state) => cursorHistory.push(state.cursorTaskId));
         renderShell();
@@ -131,6 +129,41 @@ describe("新規タスク", () => {
         await waitFor(() => expect(createTaskMock).toHaveBeenCalledWith({ title: "新規タスク", parentId: null, position: null }));
         await waitFor(() => expect(cursorHistory).toContain("real-1"));
         unsubscribe();
+    });
+
+    /**
+     * settle から revalidate 到着までの窓 (Issue #60)
+     *
+     * `createTask` を保留にしたまま `o` → `i` と進め、編集中に解決させる。
+     * Server Action を差し替えたこのテストではサーバー由来の一覧が更新されないため、
+     * 「解決したが実 id の行がまだ現れていない」状態がそのまま再現できる。
+     * 修正前はここで一覧から行が消え、ストアの clamp がカーソルを先頭行へ寄せ、
+     * その移動が行内編集を畳んでフォーカスを body へ落としていた
+     */
+    it("作成直後にタイトルを編集していると、settle をまたいでもフォーカスと下書きが残る", async () => {
+        let resolveCreate: ((result: { ok: true; data: { id: string } }) => void) | undefined;
+        createTaskMock.mockImplementation(() => new Promise((resolve) => (resolveCreate = resolve)));
+
+        renderShell();
+        fireEvent.click(screen.getByText("最初のタスク"));
+        fireEvent.keyDown(document, { key: "o" });
+        // 楽観行が描かれるまで待つ (createTask は保留のまま)
+        await act(async () => {});
+        fireEvent.keyDown(document, { key: "i" });
+        fireEvent.change(screen.getByRole("textbox", { name: "タイトルを行内編集" }), { target: { value: "編集中のタイトル" } });
+
+        await act(async () => {
+            resolveCreate?.({ ok: true, data: { id: "real-1" } });
+        });
+
+        const input = screen.getByRole("textbox", { name: "タイトルを行内編集" });
+        expect(document.activeElement).toBe(input);
+        expect(input).toHaveProperty("value", "編集中のタイトル");
+        expect(useOutlineStore.getState().cursorTaskId).toBe("real-1");
+
+        // 窓の中で確定したタイトルも実 id で保存へ流れる (行が一覧から消えていると tasksById で引けず、黙って捨てていた)
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(callServerForOpMock).toHaveBeenCalledWith({ type: "updateTitle", taskId: "real-1", title: "編集中のタイトル" }, expect.anything()));
     });
 });
 

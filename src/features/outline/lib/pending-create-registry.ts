@@ -14,12 +14,21 @@
  *    `isPendingTaskId` のガードが入力を黙って捨てていた。`queuePendingTitle` で tempId 宛に保留し、
  *    settle 後に `takePendingTitle` で取り出して実 id の通常パイプライン (楽観適用 + updateTask + undo 履歴)
  *    へ流す。create が失敗した場合は `takePendingTitle` の戻り値を捨てて保留分を破棄する
+ * 3. settle から revalidate 到着までの間、作成した行はどの一覧にも存在しない (Issue #60)。
+ *    `useOptimistic` の楽観 op は startTransition の完了で捨てられる一方、サーバー由来の一覧に実 id の行が
+ *    現れるのは RSC の再描画が届いてからだからである。この間に行が消えると、ストアの `setVisibleTaskIds` が
+ *    「カーソルが可視行に無い」と見てカーソルを先頭行へ寄せ、その移動が行内編集を畳んでフォーカスを落とす。
+ *    `recordRename` で実 id 名義のスナップショットを預かり、`mergeSettledRows` で一覧へ差し込んで窓を埋める
  */
 
-/** tempId → 実 id の対応表と、settle 前に確定されたタイトルの保留キュー */
+import type { AppTask } from "@/types/task";
+
+/** tempId → 実 id の対応表と、settle 済みで revalidate 未到着の行、settle 前に確定されたタイトルの保留キュー */
 export type PendingCreateRegistry = {
     /** settle 済みの create について、tempId から実 id への対応 (「同一論理行」の判定に使う) */
     renamedIds: Map<string, string>;
+    /** settle 済みだが実 id の行がまだ一覧に現れていない create の行 (実 id 名義)。キーは実 id */
+    settledRows: Map<string, AppTask>;
     /** settle 前に Enter/Esc で確定されたタイトル (tempId ごとに最新の 1 件だけを保持) */
     pendingTitles: Map<string, string>;
 };
@@ -27,12 +36,67 @@ export type PendingCreateRegistry = {
 /** 空のレジストリを作る (outline-shell.tsx で `useRef` の初期値として使う) */
 export const createPendingCreateRegistry = (): PendingCreateRegistry => ({
     renamedIds: new Map(),
+    settledRows: new Map(),
     pendingTitles: new Map(),
 });
 
-/** create の settle。tempId → 実 id の対応を記録する */
-export const recordRename = (registry: PendingCreateRegistry, tempId: string, realId: string): void => {
+/**
+ * create の settle。tempId → 実 id の対応と、revalidate 到着までのつなぎに使う行を記録する
+ *
+ * `row` は `createSibling` が undo 履歴のために先読みしている「作成直後の行」(実 id 名義) である。
+ * 先読みに失敗した場合 (undefined) はつなぎの行を持てないだけで、対応表の記録は行う
+ */
+export const recordRename = (registry: PendingCreateRegistry, tempId: string, realId: string, row: AppTask | undefined): void => {
     registry.renamedIds.set(tempId, realId);
+    if (row !== undefined) {
+        registry.settledRows.set(realId, row);
+    }
+};
+
+/**
+ * 楽観適用後の一覧を、settle 済みの create が実 id 名義で並ぶ形に整える
+ *
+ * settle した時点でカーソルや行内編集の id は実 id へ切り替わる (`createSibling`) 一方、一覧の側は
+ * しばらく実 id の行を持たない。両者が食い違う間は「カーソル行が可視行に無い」状態になり、
+ * ストアの `setVisibleTaskIds` がカーソルを先頭行へ寄せてしまう。そこで次の 2 つを行う。
+ *
+ * 1. まだ生きている tempId の楽観行は、実 id 名義に読み替える (実 id の行が既に来ていれば重複なので落とす)
+ * 2. 楽観行も実 id の行も無くなった分は、settle 時に預かったスナップショットで埋める
+ *    (`startTransition` の完了で楽観 op が捨てられてから、`revalidatePath` の再描画が届くまでの窓)
+ *
+ * 並び順は気にしなくてよい。`sort_path` を持つ行をそのまま渡せば `buildOutlineTree` が並べ替える
+ */
+export const mergeSettledRows = (tasks: AppTask[], registry: PendingCreateRegistry): AppTask[] => {
+    if (registry.renamedIds.size === 0) {
+        return tasks;
+    }
+    const presentIds = new Set(tasks.map((task) => task.id));
+
+    const renamedRows: AppTask[] = [];
+    for (const task of tasks) {
+        const realId = registry.renamedIds.get(task.id);
+        if (realId === undefined) {
+            renamedRows.push(task);
+            continue;
+        }
+        if (presentIds.has(realId)) {
+            continue;
+        }
+        renamedRows.push({ ...task, id: realId });
+    }
+
+    const missingRows: AppTask[] = [];
+    for (const [tempId, realId] of registry.renamedIds) {
+        if (presentIds.has(realId) || presentIds.has(tempId)) {
+            continue;
+        }
+        const row = registry.settledRows.get(realId);
+        if (row !== undefined) {
+            missingRows.push(row);
+        }
+    }
+
+    return missingRows.length === 0 ? renamedRows : [...renamedRows, ...missingRows];
 };
 
 /** settle 前の Enter/Esc 確定を、tempId 宛の保留タイトルとしてキューに置く (同一 tempId は最新の 1 件で上書き) */
@@ -48,41 +112,23 @@ export const takePendingTitle = (registry: PendingCreateRegistry, tempId: string
 };
 
 /**
- * 実 id の行が `tasksById` (楽観 tasks) に現れたことを確認できた対応を、対応表から取り除く
+ * 実 id の行が楽観適用後の一覧に現れたことを確認できた対応を、対応表から取り除く
  *
  * `renamedIds` を settle 時のまま放置すると、二度と剪定されずに増え続けるうえ、はるか後になって
  * 同じ実 id の行が (再編集中に) 正当に削除された場合でも `isAwaitingRenamedRow` 相当の判定が
  * 「まだ revalidate 待ち」と誤認し続けてしまう。行の実在を確認できた対応はもう不要なので、
- * 呼び出し元 (`outline-shell.tsx`) がレンダーごとにここを呼んで剪定する
+ * 呼び出し元 (`use-pending-create.ts`) がレンダーごとにここを呼んで剪定する。
+ * つなぎの行 (`settledRows`) も同じ寿命で、実 id の行が現れた時点で用済みになる。
+ *
+ * `isRowPresent` には `mergeSettledRows` を通す前の一覧で判定させること。
+ * 差し込んだ後の一覧で判定すると、自分が差し込んだつなぎの行を見て即座に剪定してしまい、
+ * 次のレンダーで行がまた消える (差し込みと剪定が交互に起きる)
  */
 export const pruneConfirmedRenames = (registry: PendingCreateRegistry, isRowPresent: (realId: string) => boolean): void => {
     for (const [tempId, realId] of registry.renamedIds) {
         if (isRowPresent(realId)) {
             registry.renamedIds.delete(tempId);
+            registry.settledRows.delete(realId);
         }
     }
-};
-
-/**
- * `id` で `byId` を引き、見つからなければ `renamedIds` を逆にたどって settle 前の tempId で引き直す
- *
- * `createSibling` の settle で cursor / inlineTitleEdit の id を tempId → 実id へ切り替えた直後、
- * revalidate 到着前の一瞬だけ `optimisticTasks` (`byId` の変換元) がまだ実id の行を持たず、
- * tempId の行しか持たない場合がある。この間だけ tempId 側の値へフォールバックし、
- * 呼び出し元 (`OutlineShell` の `cursorTask` 解決) に「行が消えた」と見せない。
- * `reidentify` は見つかった値の id 相当のフィールドを要求された `id` (実id) へ書き替える
- * (呼び出し元がフォールバック値の `id` を tempId のまま使って Server Action を呼んでしまわないようにするため)
- */
-export const resolveRenamedLookup = <T>(byId: ReadonlyMap<string, T>, renamedIds: ReadonlyMap<string, string>, id: string, reidentify: (value: T, id: string) => T): T | undefined => {
-    const direct = byId.get(id);
-    if (direct !== undefined) {
-        return direct;
-    }
-    for (const [tempId, realId] of renamedIds) {
-        if (realId === id) {
-            const fallback = byId.get(tempId);
-            return fallback === undefined ? undefined : reidentify(fallback, id);
-        }
-    }
-    return undefined;
 };
