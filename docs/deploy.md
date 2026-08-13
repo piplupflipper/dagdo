@@ -1,8 +1,9 @@
 # dagdo 本番デプロイ手順書
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 85e1292
+- 対象コミット: 1a167fc
 - 作成日: 2026-08-12
+- 更新日: 2026-08-13
 - 生成者: Claude Code
 
 本文中、`docs/auth-design.md` に根拠を持つ記述には `(auth-design.md §NN)` を、`docs/github-oauth-setup.md` に根拠を持つ記述には `(github-oauth-setup.md §NN)` を付ける。
@@ -322,6 +323,7 @@ Vercel 上で動作する Auth.js は、これらをデプロイ先ドメイン�
 ---
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 85e1292
+- 対象コミット: 1a167fc
 - 作成日: 2026-08-12
+- 更新日: 2026-08-13
 - 生成者: Claude Code

@@ -1,8 +1,9 @@
 # dagdo DB設計書
 
 対象リポジトリ: dagdo
-対象コミット: 90c9c84
+対象コミット: 1a167fc
 作成日: 2026-08-08
+更新日: 2026-08-13
 生成者: Claude Code
 
 本文書は `req.md` （Todo Application 詳細設計書、対象コミット 90c9c84 時点）の記載を根拠とする。
@@ -654,7 +655,8 @@ C position=2
 
 V1ではFractional IndexingやLexoRankは使用しない(req.md §16)。
 
-並び替え時に対象sibling groupのpositionを`0, 1, 2, 3, ...`と振り直す(req.md §16)。
+`position`は同一actual sibling group内で、論理削除済みの行も含めて0から連番で連続する。
+この不変条件を保つ採番規則は12.3節（`reorder_tasks`）と12.2節（`move_task`）が定める。
 
 Todoアプリの規模（数百から数千件程度、15章参照）を考慮し、この方式で十分と判断されている(req.md §16, §68)。
 
@@ -753,6 +755,23 @@ enable row level security;
 基本条件は`user_id = next_auth.uid()`である(req.md §40)。
 
 `next_auth.uid()`は認証セッションのユーザーIDを返す関数であり、詳細は13章で述べる。
+
+RLS PolicyはあくまでUSING / WITH CHECKによる行フィルタであり、それ単体では`authenticated`ロールにテーブルへのアクセス権限を与えない。
+ローカルスタックの`supabase/config.toml`は`auto_expose_new_tables`を設定しておらず（新方式の既定値である無効に従う）、`public` schema配下に作成したオブジェクトはData APIロールへ自動GRANTされない。
+そのため、RLSの有効化とPolicy定義に加えて`authenticated`ロールへの基本権限を明示的にGRANTする（`supabase/migrations/20260808000006_rls_policies.sql:19-21`）。
+
+```sql
+grant select, insert, update, delete on public.tasks to authenticated;
+grant select, insert, update, delete on public.task_dependencies to authenticated;
+grant select on public.app_tasks to authenticated;
+```
+
+`public.app_tasks`が`select`のみなのは、Viewが読み取り専用の派生ロジックであり（9章）、書き込みは常に基底テーブルまたはRPC経由で行うためである。
+
+本節のGRANTを欠くと、Policyは正しく定義されているのに`authenticated`ロールからは`permission denied for table tasks`となる。
+設計書だけからschemaを再構成する場合は、この権限設定を落とさないこと。
+
+`next_auth` schemaと`next_auth.uid()`に対する`authenticated` / `anon`へのGRANTは`docs/auth-design.md`第4.4節が扱う。
 
 ### 10.1 tasksのPolicy
 
@@ -891,6 +910,11 @@ on function ...
 to authenticated;
 ```
 
+RPCの引数名はすべて`p_`接頭辞を持つ（`p_task_id` / `p_new_parent_id` / `p_new_position` / `p_parent_id` / `p_ordered_task_ids` / `p_depends_on_task_id`）。
+これは呼び出し規約そのものである。
+supabase-jsの`client.rpc(name, args)`はargsのキーを関数の引数名と完全一致で解決するため、接頭辞を落とすと`PGRST202`（該当する関数が見つからない）になる。
+以下の各節では、req.mdが挙げる論理的な引数名に対応する実際の引数名を併記する。
+
 ### 12.1 add_task_dependency
 
 処理の流れは次の通りである(req.md §53)。
@@ -911,7 +935,8 @@ cycle検出ロジックをRPCとTriggerで重複させず、不変条件はTrigg
 
 ### 12.2 move_task
 
-入力イメージは`task_id`、`new_parent_id`、`new_position`である(req.md §54)。
+入力は`task_id`、`new_parent_id`、`new_position`である(req.md §54)。
+実際の引数名は`p_task_id`、`p_new_parent_id`、`p_new_position`である。
 
 1トランザクション内で、旧sibling groupのposition整理、`parent_id`変更、新sibling groupのposition整理を行う(req.md §54)。
 
@@ -919,7 +944,8 @@ cycle検出ロジックをRPCとTriggerで重複させず、不変条件はTrigg
 
 ### 12.3 reorder_tasks
 
-入力イメージは`parent_id`と`ordered_task_ids[]`である(req.md §55)。
+入力は`parent_id`と`ordered_task_ids[]`である(req.md §55)。
+実際の引数名は`p_parent_id`、`p_ordered_task_ids`である。
 
 並べ替えの対象は、指定されたactual sibling groupのうち論理削除されていないタスクのみとする。
 対象が現在占めている`position`の集合をそのまま使い回し、`ordered_task_ids[]`の順に昇順で割り当てる。
@@ -936,6 +962,9 @@ cycle検出ロジックをRPCとTriggerで重複させず、不変条件はTrigg
 
 対象が同一ユーザーかつ同一actual parentであり、かつ論理削除されていないことを検証する(req.md §55)。
 `ordered_task_ids[]`に重複が含まれる場合も検証で弾く。同一タスクへ複数の`position`を割り当てて連番を壊すことを防ぐためである。
+
+この検証に失敗した場合、すなわち`p_ordered_task_ids`が`NULL`である、配列長が対象の件数と一致しない、または重複や他グループのIDを含む場合は`INVALID_PARENT`（SQLSTATE `ET007`）を返す(`supabase/migrations/20260808000007_reorder_tasks_exclude_deleted_siblings.sql:63-69`)。
+件数の不一致に`INVALID_POSITION`ではなく`INVALID_PARENT`を割り当てているのは、この検証が「渡されたID集合が指定sibling groupと一致するか」を見るものであり、個々の`position`値の妥当性を見るものではないためである。
 
 ### 12.4 restore_task
 
@@ -1005,7 +1034,11 @@ JWTには少なくとも`sub`、`role`、`exp`を含める(req.md §34)。
 
 ### 13.4 next_auth.uid()
 
-PostgreSQL/RLS上では、Auth.js Adapter側で提供される`next_auth.uid()`をユーザー識別に利用する(req.md §35)。
+PostgreSQL/RLS上では`next_auth.uid()`をユーザー識別に利用する(req.md §35)。
+
+この関数は本リポジトリのmigrationが定義する(`supabase/migrations/20260808000001_next_auth_schema.sql:40-48`)。
+`@auth/supabase-adapter`はSQLを配布しないため、Adapterをインストールしただけでは存在しない。
+定義の詳細は`docs/auth-design.md`第4.2節が扱う。
 
 `next_auth.uid()`はJWTの`sub`からAuth.js user UUIDを取得する(req.md §35)。
 
@@ -1017,7 +1050,7 @@ PostgreSQL/RLS上では、Auth.js Adapter側で提供される`next_auth.uid()`�
 
 Auth.js内部用とTodoアプリ用の、2種類のSupabase clientを明確に分離する(req.md §36)。
 
-Auth.js内部用は、Auth.js AdapterがAuth.js Adapterが認証情報を管理するために使用し、サーバー専用のsecret keyを利用する(req.md §36)。
+Auth.js内部用は、Auth.js Adapterが認証情報を管理するために使用し、サーバー専用のsecret keyを利用する(req.md §36)。
 
 ```text
 Auth.js
@@ -1070,9 +1103,36 @@ type TaskErrorCode =
 
 Server ActionでDBエラーをUI向けエラーへ変換する(req.md §66)。
 
-各コードの発生条件は、req.mdの記述からは次のように対応づけられる。
+### 14.1 SQLSTATEによる契約
 
-**TASK_NOT_FOUND**：操作対象のタスクが存在しない、または（RLSにより）他ユーザーのタスクであるためアクセスできない場合に対応するコードである。req.mdはこのコード自体の発生条件を個別に説明していないが、`TaskErrorCode`の一覧(req.md §66)に含まれている。
+各エラーコードには専用のSQLSTATEを割り当てる。
+`RAISE EXCEPTION` の `using errcode` で明示し、あわせてメッセージ先頭にもコード文字列を置く(`supabase/migrations/20260808000004_triggers.sql:8-15`)。
+
+| SQLSTATE | TaskErrorCode | 発生元 |
+| --- | --- | --- |
+| `ET001` | `TASK_NOT_FOUND` | `move_task` / `add_task_dependency` / `restore_task` / `permanently_delete_task`（migration 0005） |
+| `ET002` | `TASK_PARENT_CYCLE` | 親子cycle Trigger（11.1節） |
+| `ET003` | `TASK_DEPENDENCY_CYCLE` | dependency cycle Trigger（11.2節） |
+| `ET004` | `TASK_BLOCKED` | blocked completion Trigger（11.3節） |
+| `ET005` | `DEPENDENCY_ALREADY_EXISTS` | `add_task_dependency`（migration 0005） |
+| `ET006` | `INVALID_POSITION` | `move_task`（migration 0005） |
+| `ET007` | `INVALID_PARENT` | `move_task` / `reorder_tasks`（migration 0005、0007） |
+
+`ET`で始まる5文字を選んでいるのは、PostgreSQLが`RAISE EXCEPTION`の既定に用いる`P0001`や標準のクラスコードと衝突しない領域であるためである。
+
+Next.js側の変換は`src/features/task/lib/map-db-error.ts`が持つ。
+`PostgrestError.code`（SQLSTATE）を最優先で引き、次にメッセージ先頭のコード文字列で引く。
+SQLSTATEを優先するのは、メッセージ文言が将来変わっても契約が壊れないようにするためである。
+どちらでも判別できない契約外のエラーは`TaskErrorCode`へ変換せず、握りつぶさずre-throwする。
+
+表示専用の連番は持たない。
+番号はSQLSTATEの1系統だけとし、利用者の報告からmigrationのSQLを直接検索できる状態を保つ。
+
+上表の割り当ては`supabase/tests/010_error_contract.test.sql`が`throws_ok`で固定する(`docs/migration-design.md` 7.7節)。
+
+### 14.2 各コードの発生条件
+
+**TASK_NOT_FOUND**：操作対象のタスクが存在しない、または（RLSにより）他ユーザーのタスクであるためアクセスできない場合に返す。RPCが対象行を`select`できなかった時点で判定する。
 
 **TASK_PARENT_CYCLE**：親子cycle Trigger（11.1節）が、`NEW.parent_id`から辿った祖先に`NEW.id`が含まれると判定した場合に返す(req.md §48)。
 
@@ -1080,45 +1140,44 @@ Server ActionでDBエラーをUI向けエラーへ変換する(req.md §66)。
 
 **TASK_BLOCKED**：blocked Completion Trigger（11.3節）が、未完了かつ未削除のdependencyを持つ未完了タスクを完了させようとした場合に返す(req.md §13, §50)。
 
-**DEPENDENCY_ALREADY_EXISTS**：`task_dependencies`の主キー（`user_id, task_id, depends_on_task_id`）に対する重複INSERTに対応するコードである(req.md §38, §66)。
+**DEPENDENCY_ALREADY_EXISTS**：`add_task_dependency`が、同じ`(user_id, task_id, depends_on_task_id)`の行が既に存在すると判定した場合に返す(req.md §38, §66)。主キーの重複INSERTに任せず、RPC側で先に検出する。
 
-**INVALID_POSITION**：`reorder_tasks`や`move_task`が受け取る`position`の値が不正な場合、あるいは`tasks_position_non_negative`制約（`position >= 0`）に違反する場合に対応するコードである(req.md §37, §54, §55, §66)。
+**INVALID_POSITION**：`move_task`が受け取る`p_new_position`が負値の場合に返す。`reorder_tasks`はこのコードを返さない。並べ替えは`position`値を引数に取らず、可視の兄弟が占めている`position`の集合を使い回すためである（12.3節）。
 
-**INVALID_PARENT**：`tasks_not_own_parent`制約、または`tasks_parent_same_user_fkey`制約に違反する`parent_id`が指定された場合に対応するコードである(req.md §37, §66)。
-
-`TASK_NOT_FOUND`、`DEPENDENCY_ALREADY_EXISTS`、`INVALID_POSITION`、`INVALID_PARENT`の4つについて、req.mdはどのConstraint、Trigger、RPCが具体的にこのコードへ変換するかを明記していない。
-
-これら4つの対応関係は、対応する制約やRPCの記述から導かれる推測であり、実装時にはServer Action側のエラー変換ロジック（req.md §66「Server ActionでDBエラーをUI向けエラーへ変換する」）で確定させる必要がある。
+**INVALID_PARENT**：`move_task`が指定された`p_new_parent_id`のタスクを見つけられなかった場合、および`reorder_tasks`が`p_ordered_task_ids`と対象sibling groupの不一致を検出した場合に返す（12.3節）。`tasks_not_own_parent`制約と`tasks_parent_same_user_fkey`制約の違反はTriggerやRPCを経由せず制約自身が拒否するため、SQLSTATEは制約違反の標準コード（`23xxx`）になり、本コードへは変換されない。
 
 ## 15. インデックス方針、一覧取得、同時実行の割り切り
 
 ### 15.1 インデックス方針
 
-V1では最低限、次のインデックスを候補とする(req.md §67)。
+req.md §67は6本のインデックスを候補として挙げ、PRIMARY KEYやUNIQUE制約で既に生成されるindexとの重複を確認した上で作成することを求めている(req.md §67)。
 
-```text
-tasks(user_id, parent_id)
+この確認の結果、5本を採用し1本を不採用とした(`supabase/migrations/20260808000002_tasks_and_dependencies.sql:79-100`)。
 
-tasks(user_id, deleted_at)
+| インデックス | 採用 | 実際の名前と理由 |
+| --- | --- | --- |
+| `tasks(user_id, parent_id)` | 採用 | `tasks_user_id_parent_id_idx`。`tasks_parent_same_user_fkey`の参照元列だが、参照元列自体には自動でindexが張られないため必要 |
+| `tasks(user_id, deleted_at)` | 採用 | `tasks_user_id_deleted_at_idx`。`app_tasks` Viewの削除済み除外条件とゴミ箱一覧の絞り込みに使う |
+| `tasks(user_id, completed_at)` | 採用 | `tasks_user_id_completed_at_idx`。完了/未完了での絞り込みに使う |
+| `tasks(user_id, due_date)` | 採用 | `tasks_user_id_due_date_idx`。期日での絞り込み・並び替えに使う |
+| `task_dependencies(user_id, task_id)` | **不採用** | PRIMARY KEY `(user_id, task_id, depends_on_task_id)` の先頭2列と一致し、既存のPK indexで代替できる |
+| `task_dependencies(user_id, depends_on_task_id)` | 採用 | `task_dependencies_user_id_depends_on_task_id_idx`。PKのindexは`(user_id, task_id, ...)`順であり、依存元の逆引きには別途indexが要る |
 
-tasks(user_id, completed_at)
-
-tasks(user_id, due_date)
-
-task_dependencies(user_id, task_id)
-
-task_dependencies(user_id, depends_on_task_id)
-```
-
-実際にはPRIMARY KEYやUNIQUE制約で既に生成されるindexとの重複を確認した上で作成する(req.md §67)。
-
-検索用`ILIKE '%query%'`についてはV1では高度なindex最適化を必須とせず、必要になった場合に`pg_trgm`等を検討する(req.md §67)。
+検索用`ILIKE '%query%'`についてはV1では高度なindex最適化を行わず、必要になった場合に`pg_trgm`等を検討する(req.md §67)。
+なお現状の検索はDBへ問い合わせず、クライアント側で取得済み一覧を絞り込む実装である（`docs/frontend-design.md` §4 の `filter-tasks.ts`）。
 
 ### 15.2 一覧取得
 
-V1ではページネーションを必須としない(req.md §68)。
+V1ではページネーションを実装しない(req.md §68)。
 
 個人Todo用途を想定し、そのユーザーの未削除タスク全件を取得可能とし、数百から数千件程度を想定する(req.md §68)。
+
+ただしData API側に件数の上限がある。
+`supabase/config.toml:18`は`max_rows = 1000`であり、`src/features/task/lib/queries.ts`の`.select("*")`は1000件を超える分を警告なく切り捨てる。
+req.mdが想定する「数千件」の上端はこの上限を超えるため、現状は1000件までしか正しく表示できない。
+対処（ページネーションの導入、または`max_rows`の引き上げ）は決めていない（`docs/frontend-design.md` 第 13 章）。
+
+`max_rows`はhosted Supabase側では`config.toml`から反映されず、Dashboardの設定が別に効く(`docs/deploy.md` 第5章)。
 
 タスクとdependency情報は別々に取得し、`app_tasks`と`task_dependencies`をそれぞれ取得して必要に応じてアプリケーション側で関連付ける(req.md §69)。
 
@@ -1184,7 +1243,7 @@ req.mdは7つの設計原則を挙げている(req.md §75)。
 
 **next_auth schema**：Auth.jsの認証情報を保存するPostgreSQL schema。`next_auth.users`、`next_auth.accounts`、`next_auth.sessions`、`next_auth.verification_tokens`を含む(req.md §31)。
 
-**next_auth.uid()**：Auth.js Adapter側で提供される、PostgreSQL/RLS上でユーザーを識別するための関数。Custom JWTの`sub`からAuth.js user UUIDを取得する(req.md §35)。
+**next_auth.uid()**：PostgreSQL/RLS上でユーザーを識別するためのSQL関数。Custom JWTの`sub`からAuth.js user UUIDを取得する(req.md §35)。定義は本リポジトリのmigration（`supabase/migrations/20260808000001_next_auth_schema.sql:40-48`）が持つ。
 
 **Custom JWT**：Next.js Server ActionからSupabase Data APIへアクセスする際に生成する短寿命のJWT。`sub`（Auth.js user UUID）、`role`（`authenticated`）、`exp`を含む(req.md §34)。Auth.jsのsessionとは別物として扱う(req.md §33)。
 
@@ -1197,6 +1256,7 @@ req.mdは7つの設計原則を挙げている(req.md §75)。
 ---
 
 対象リポジトリ: dagdo
-対象コミット: 90c9c84
+対象コミット: 1a167fc
 作成日: 2026-08-08
+更新日: 2026-08-13
 生成者: Claude Code
