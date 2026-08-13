@@ -15,6 +15,7 @@ import { findSiblingTaskId } from "@/features/outline/lib/flatten-for-dnd";
 import type { InlineTitleCaret, InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
 import { applyOutlineOp, type OutlineOp } from "@/features/outline/lib/outline-ops";
 import { DEFAULT_LEFT_PANE_RATIO, PANE_RATIO_STORAGE_KEY, parseStoredPaneRatio } from "@/features/outline/lib/pane-ratio";
+import { createPendingCreateRegistry, mergeSettledRows } from "@/features/outline/lib/pending-create-registry";
 import { SearchOverlay } from "@/features/search/components/search-overlay";
 import { filterTasks } from "@/features/search/lib/filter-tasks";
 import { DetailPane, type DetailPaneHandle } from "@/features/task-detail/components/detail-pane";
@@ -144,25 +145,46 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         findCursorRowElement()?.focus();
     }, [cursorTaskId]);
 
-    const tasksById = new Map(optimisticTasks.map((task) => [task.id, task]));
-    const rows = buildOutlineTree(optimisticTasks);
+    /**
+     * 楽観 create の tempId → 実id 対応表 (docs/frontend-design.md §5.2)
+     *
+     * 読み書きするのは `useOutlineMutations` (settle 時の記録) と `usePendingCreate` (レンダー中の調整と剪定) だが、
+     * 実体をここで持つのは、下の `mergeSettledRows` がツリー構築より前に対応表を要るためである (Issue #60)
+     */
+    const pendingCreateRef = useRef(createPendingCreateRegistry());
+    const pendingCreate = pendingCreateRef.current;
+
+    /**
+     * 表示に使うタスク一覧
+     *
+     * `createTask` の settle (startTransition の完了で楽観 op が捨てられる) から、`revalidatePath` による
+     * RSC の再描画が届くまでの間、作成した行はサーバー由来の一覧にも楽観適用後の一覧にも存在しない。
+     * その間だけ、settle 時に預けたつなぎの行を差し込んで一覧から消えないようにする (Issue #60)。
+     * 行が消えるとストアの `setVisibleTaskIds` がカーソルを先頭行へ寄せ、その移動が行内タイトル編集を畳んで
+     * フォーカスを落としてしまう。差し込みはツリーの組み立てより前でなければ意味がないため、ここで行う
+     */
+    const displayTasks = mergeSettledRows(optimisticTasks, pendingCreate);
+    const optimisticTaskIds = new Set(optimisticTasks.map((task) => task.id));
+
+    const tasksById = new Map(displayTasks.map((task) => [task.id, task]));
+    const rows = buildOutlineTree(displayTasks);
     const trimmedQuery = searchQuery.trim();
     const visibleRows =
         trimmedQuery.length === 0
             ? deriveVisibleRows(rows, collapsedTaskIds)
             : (() => {
-                  const matchedIds = new Set(filterTasks({ tasks: optimisticTasks, query: trimmedQuery }).map((task) => task.id));
+                  const matchedIds = new Set(filterTasks({ tasks: displayTasks, query: trimmedQuery }).map((task) => task.id));
                   return rows.filter((row) => matchedIds.has(row.task.id));
               })();
     const visibleTaskIdList = visibleRows.map((row) => row.task.id);
 
-    const { registry: pendingCreate, cursorTask } = usePendingCreate({ cursorTaskId, tasksById, visibleTaskIdList, inlineTitleEdit, setInlineTitleEdit });
+    const cursorTask = usePendingCreate({ registry: pendingCreate, cursorTaskId, tasksById, optimisticTaskIds, visibleTaskIdList, inlineTitleEdit, setInlineTitleEdit });
 
     useEffect(() => {
         setVisibleTaskIds(visibleTaskIdList);
     }, [visibleTaskIdList, setVisibleTaskIds]);
 
-    const blockedCount = optimisticTasks.filter((task) => task.is_blocked).length;
+    const blockedCount = displayTasks.filter((task) => task.is_blocked).length;
 
     const {
         statusMessage,
@@ -182,7 +204,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         handleReparent,
         undo,
         redo,
-    } = useOutlineMutations({ userId, tasks: optimisticTasks, tasksById, dependencies, cursorTask, pendingCreate, applyOptimisticAction, setInlineTitleEdit });
+    } = useOutlineMutations({ userId, tasks: displayTasks, tasksById, dependencies, cursorTask, pendingCreate, applyOptimisticAction, setInlineTitleEdit });
 
     /** `i` / `A`。カーソル行のタイトルの行内編集を開始する。実際のフォーカス移動は InlineTitleEditor の callback ref が行う */
     const startInlineTitleEdit = (caret: InlineTitleCaret): void => {
@@ -214,7 +236,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         if (cursorTaskId === null) {
             return;
         }
-        const siblingTaskId = findSiblingTaskId({ tasks: optimisticTasks, taskId: cursorTaskId, direction });
+        const siblingTaskId = findSiblingTaskId({ tasks: displayTasks, taskId: cursorTaskId, direction });
         if (siblingTaskId === null) {
             return;
         }
@@ -278,12 +300,13 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                 <div className="flex min-w-0 flex-1 flex-col border-border md:flex-[0_0_var(--left-pane-percent)] md:border-r" style={{ "--left-pane-percent": `${leftPaneRatio}%` } as CSSProperties}>
                     <OutlinePane
                         visibleRows={visibleRows}
-                        tasks={optimisticTasks}
+                        tasks={displayTasks}
                         dependencies={dependencies}
                         cursorTaskId={cursorTaskId}
                         visualSelectedTaskIds={visualSelectedTaskIds}
                         flashTaskId={flashTaskId}
                         inlineTitleEdit={inlineTitleEdit}
+                        rowKeys={pendingCreate.rowKeys}
                         onSelectCursor={setCursor}
                         onToggleCollapse={toggleCollapsed}
                         onToggleDone={handleToggleDone}
@@ -294,7 +317,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                         onCancelInlineTitle={() => setInlineTitleEdit(null)}
                         onFocusOutlineList={focusOutlineList}
                     />
-                    <StatusLine mode={mode} cursorTask={cursorTask} totalCount={optimisticTasks.length} blockedCount={blockedCount} infoMessage={statusMessage} errorMessage={statusError} />
+                    <StatusLine mode={mode} cursorTask={cursorTask} totalCount={displayTasks.length} blockedCount={blockedCount} infoMessage={statusMessage} errorMessage={statusError} />
                 </div>
                 {/* dnd-kit の DndContext (行の並べ替え、OutlinePane 内) の外に置き、行 dnd とポインタ操作を競合させない */}
                 <PaneDivider containerRef={paneRowRef} ratio={leftPaneRatio} onRatioChange={setLeftPaneRatio} onDragEnd={handlePaneRatioDragEnd} />
@@ -302,7 +325,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                     <DetailPane
                         ref={detailPaneRef}
                         task={cursorTask}
-                        allTasks={optimisticTasks}
+                        allTasks={displayTasks}
                         dependencies={dependencies}
                         tempIdRenames={pendingCreate.renamedIds}
                         onEscapeToOutline={focusOutlineList}
@@ -310,13 +333,13 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                         onCommitDescription={commitDescriptionEdit}
                         onCommitDueDate={commitDueDateEdit}
                     />
-                    <DagPanel centerTaskId={cursorTaskId} tasks={optimisticTasks} dependencies={dependencies} flashTaskId={flashTaskId} />
+                    <DagPanel centerTaskId={cursorTaskId} tasks={displayTasks} dependencies={dependencies} flashTaskId={flashTaskId} />
                 </div>
             </div>
 
             <MobileDetailSheet
                 task={cursorTask}
-                allTasks={optimisticTasks}
+                allTasks={displayTasks}
                 dependencies={dependencies}
                 flashTaskId={flashTaskId}
                 isInert={isHelpOpen}

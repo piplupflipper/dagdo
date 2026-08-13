@@ -208,7 +208,7 @@ src/
         keymap-help.ts              # テーブルからヘルプの表示セクションを導く (第 6.3 節)
         key-sequence.ts             # キーシーケンス表現のトークン分解・整形
         inline-title-edit.ts        # 行内タイトル編集の状態型と判定 (第 6.4 節)
-        pending-create-registry.ts  # tempId → 実 id の対応表と保留タイトルのキュー
+        pending-create-registry.ts  # tempId → 実 id の対応表・つなぎの行・行の論理キー・保留タイトルのキュー
         pane-ratio.ts               # ペイン比率の clamp と localStorage 値の解釈
 
     task-detail/                    # 右ペイン上部・モバイル詳細シート
@@ -551,12 +551,37 @@ Server Action 成功後、実 id へ `setCursor` し直す。
 
 tempId から実 id への付け替えは「同一論理行の id 変更」であり、「別の行へ移った」とは区別する必要がある。
 区別しないと、付け替えの瞬間に行内タイトル編集や `DetailPane` の下書きが破棄される。
-対応表は `pending-create-registry.ts` が持ち、`use-pending-create.ts` がレンダー中の state 調整（カーソル移動の判定 → 対応表の剪定 → 表示行消失の判定）をこの順序で行う。
+対応表の型と操作は `pending-create-registry.ts` が持つ（実体は `OutlineShell` の `useRef`。理由は次の項）。
+`use-pending-create.ts` がレンダー中の state 調整（カーソル移動の判定 → 対応表の剪定 → 表示行消失の判定）をこの順序で行う。
 `DetailPane` へは対応表の読み取り専用ビューだけを渡し、`temp-id-renames.ts` の `isSameLogicalRow` で同じ判定をさせる。
 
 settle 前に `Enter` / `Esc` でタイトルが確定された場合は、その値を保留キューへ置く。
 settle 後に実 id で通常のパイプライン（楽観適用 → `updateTask` → 履歴）へ流す。
 `create` 自体が失敗した場合は保留分を破棄する。
+
+#### settle から revalidate 到着までの窓
+
+settle で id が実 id へ切り替わっても、一覧の側はしばらく実 id の行を持たない。
+`useOptimistic` の楽観 op は `startTransition` の完了で捨てられる一方、サーバー由来の一覧に実 id の行が現れるのは `revalidatePath` による RSC の再描画が届いてからだからである。
+この窓の間、作成した行はどの一覧にも存在せず、次の連鎖でフォーカスと編集中の下書きが失われていた（Issue #60）。
+
+1. 行が消えるため、カーソル（実 id）が可視行の集合に含まれなくなる
+2. ストアの `setVisibleTaskIds` が「カーソルが可視行に無い」と見てカーソルを先頭行へ寄せる（この clamp は折りたたみ・絞り込みで行が消えたときに要る）
+3. カーソルが動いたことで、上記のレンダー中の state 調整が行内タイトル編集を畳む。`input` が unmount され、フォーカスが `body` へ落ちる
+
+`OutlineShell` は木を組み立てる前に `mergeSettledRows`（`pending-create-registry.ts`）を通し、この窓を埋める。
+まだ生きている `tempId` の楽観行は実 id 名義に読み替え、楽観行も実 id の行も無くなった分は settle 時に預けたスナップショット（undo 履歴のために先読みしてある「作成直後の行」と同じもの）で埋める。
+実 id の行がサーバー由来の一覧に現れた時点で、対応表もスナップショットも剪定する。
+
+行の React `key` には、id ではなく「実 id → 最初の tempId」で解決した論理キーを使う（`resolveRowKey`）。
+id をそのまま `key` にすると、付け替えの瞬間に行のサブツリーが作り直される。
+行内タイトル編集中であれば `input` も作り直され、`attachInput`（第 6.4 節）が改めて `setSelectionRange` を行うためキャレットが `caret` の指定位置へ巻き戻る（Issue #62）。
+この対応（`rowKeys`）だけは剪定しない。剪定すればその時点で `key` が実 id へ戻り、避けたい作り直しがそこで起きるためである。
+保持量はページのセッション中に作成した行 1 件あたり 1 エントリに収まる。
+
+対応表の実体を `use-pending-create.ts` ではなく `OutlineShell` が持つのはこのためである。
+差し込みは木の組み立てより前に走る必要があり、木の組み立て後に呼ぶ `use-pending-create.ts` では間に合わない。
+剪定の判定には差し込む前の一覧を使う。差し込んだ後の一覧で判定すると、自分が差し込んだ行を「現れた」と見て即座に剪定し、次のレンダーで行がまた消える。
 
 ### 5.3 派生値
 
@@ -1172,7 +1197,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | ヘルプ表示セクションの導出 | `outline/lib/keymap-help.test.ts` |
 | キーシーケンスのトークン分解・整形 | `outline/lib/key-sequence.test.ts` |
 | 行内タイトル編集の状態判定 | `outline/lib/inline-title-edit.test.ts` |
-| tempId → 実 id の対応表 | `outline/lib/pending-create-registry.test.ts` |
+| tempId → 実 id の対応表、settle 済みの行の差し込み、行の論理キー | `outline/lib/pending-create-registry.test.ts` |
 | ペイン比率の clamp と保存値の解釈 | `outline/lib/pane-ratio.test.ts` |
 | 表示用状態の導出（done / blocked / ready） | `task-detail/lib/task-status.test.ts` |
 | 依存操作のエラー文言 | `task-detail/lib/dependency-error.test.ts` |
