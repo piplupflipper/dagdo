@@ -995,7 +995,7 @@ A(0) / B(1) / C(2) でAをNULL（末尾）へ移す場合、まずB → 0 / C �
 actual parentは変更せず、actual sibling groupの末尾へpositionを移動する(req.md §56)。
 
 末尾へ移す前に、復元対象が元々占めていた`position`より後ろの兄弟を1つ詰める(`supabase/migrations/20260813000001_close_position_gaps_on_restore_and_delete.sql`)。
-これにより8.1節の連番の不変条件が復元後も保たれ、req.md §56の末尾移動もそのまま成り立つ。
+これにより8.2節の連番の不変条件が復元後も保たれ、req.md §56の末尾移動もそのまま成り立つ。
 A(0) / B(1、論理削除済み) / C(2) でBを復元する場合、まずC → 1と詰め、続いてBを末尾へ移すため、結果はA(0) / C(1) / B(2)となる。
 
 親子関係や依存関係など、論理削除中に保持していた構造をそのまま再利用する(req.md §56)。
@@ -1004,7 +1004,7 @@ A(0) / B(1、論理削除済み) / C(2) でBを復元する場合、まずC → 
 
 完全削除時は1トランザクションで、子タスクの`parent_id`のNULL化、子タスクのpositionのルート側での調整、関連dependency edgeの削除、対象タスクのDELETEを行い、中途半端な状態を残さない(req.md §57)。
 
-これに加えて、対象が占めていた`position`より後ろの兄弟を1つ詰め、8.1節の連番の不変条件を保つ(`supabase/migrations/20260813000001_close_position_gaps_on_restore_and_delete.sql`)。
+これに加えて、対象が占めていた`position`より後ろの兄弟を1つ詰め、8.2節の連番の不変条件を保つ(`supabase/migrations/20260813000001_close_position_gaps_on_restore_and_delete.sql`)。
 
 詰める処理は子のreparentより前に置く必要がある。
 子を移すルート末尾を対象自身を除いた`max(position) + 1`で求めるため、詰めを後に置くと子の`position`が二重に詰まる。
