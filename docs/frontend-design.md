@@ -183,7 +183,7 @@ src/
         outline-header.tsx          # 一覧上部のヘッダ（検索ボタン・V 切替・新規タスク・キーヒント）
         outline-pane.tsx            # 左ペイン全体（DndContext と行の一覧）
         outline-row.tsx             # 1 行（バレット+タイトル+期日チップ+🔒）
-        inline-title-editor.tsx     # `i` / `A` の行内タイトル編集の input (第 6.4 節)
+        inline-title-editor.tsx     # `i` / `I` / `a` / `A` の行内タイトル編集の input (第 6.4 節)
         dependency-rail.tsx         # ガターの依存レール SVG (第 7.2 節)
         pane-divider.tsx            # 2 ペインの幅比ドラッグハンドル (第 7.1 節)
         keymap-help-overlay.tsx     # `?` のヘルプオーバーレイ (第 6.3 節)
@@ -527,7 +527,7 @@ VISUAL の一括完了（`completeSelection`）は `runOp` を通らない。
 
 `DetailPane` の呼び出し窓口は `commitInlineTitleEdit` / `commitDescriptionEdit` / `commitDueDateEdit` であり、いずれも `use-outline-mutations.ts` が持つ。
 3 つとも「値が変わっていなければ何もせず、変わっていれば `runOp` へ渡す」という同じ形である。
-タイトルの窓口は行内タイトル編集（`i` / `A`、第 6.4 節）と共有しており、どちらの経路でも同じ `updateTitle` Op を通る。
+タイトルの窓口は行内タイトル編集（`i` / `I` / `a` / `A`、第 6.4 節）と共有しており、どちらの経路でも同じ `updateTitle` Op を通る。
 
 楽観適用が同期的に効くため、`DetailPane` は Server Action の応答を待たずに編集領域を畳んでよい。
 「保存中」のブロッキング表示・disabled は置かない。
@@ -621,9 +621,9 @@ NORMAL モード。
 | `x` | 完了 | `complete` Op を `runOp` へ流す（第 5.2 節）。blocked の場合 `TASK_BLOCKED` を受けてステータス行へ原因タスク名を含む文言を出し、DAG の原因ノードを点滅させる |
 | `o` | 新規タスク作成（下） | カーソル行の下に同じ actual parent の兄弟として `createTask`。挿入位置は `createTask` が兄弟グループ末尾へ作ったうえで `move_task` RPC(req.md §54) へ委ねる（兄弟の position をずらす更新を 1 トランザクションにまとめるため） |
 | `O` | 新規タスク作成（上） | カーソル行の上に同じ actual parent の兄弟として `createTask`。挿入位置の扱いは `o` と同じ |
-| `i` | タイトルの行内編集（先頭） | カーソル行のタイトルを行内編集する。キャレットは先頭（第 6.4 節） |
-| `A` | タイトルの行内編集（末尾） | カーソル行のタイトルを行内編集する。キャレットは末尾（第 6.4 節） |
-| `Enter` | 選択行の編集 | フォーカスを `DetailPane` の編集領域へ移す（タイトルの行内編集は `i` / `A` で行う） |
+| `i` / `I` | タイトルの行内編集（先頭） | カーソル行のタイトルを行内編集する。キャレットは先頭（第 6.4 節） |
+| `a` / `A` | タイトルの行内編集（末尾） | カーソル行のタイトルを行内編集する。キャレットは末尾（第 6.4 節） |
+| `Enter` | 選択行の編集 | フォーカスを `DetailPane` の編集領域へ移す（タイトルの行内編集は `i` / `I` / `a` / `A` で行う） |
 | `za` | 折りたたみ切替 | ストア内完結。DB アクセスなし |
 | `zo` / `zc` | カーソル行の折りたたみを開く / 閉じる | ストア内完結。`za` と同じく `collapsedTaskIds` の 1 要素の出し入れ |
 | `zR` | すべて展開 | ストア内完結（`collapsedTaskIds` を空集合にするだけ） |
@@ -781,8 +781,12 @@ SEARCH の `Enter` / `Escape` は NORMAL へ戻る操作なので `モード` �
 
 ### 6.4 タイトルの行内編集
 
-`i` / `A`（第 6.1 節）はカーソル行のタイトルを行内編集する。
-キャレット位置は vim に倣い `i` が先頭、`A` が末尾とする（`DetailPane` のタイトル編集が全選択にしているのとは使い分ける）。
+`i` / `I` / `a` / `A`（第 6.1 節）はカーソル行のタイトルを行内編集する。
+キャレット位置は `i` / `I` が先頭、`a` / `A` が末尾である（`DetailPane` のタイトル編集が全選択にしているのとは使い分ける）。
+
+vim の 4 キーをすべて持つが、`i` と `a` に桁を記憶させる vim 忠実版は採らない（2026-08-13 の判断）。
+vim の `i` / `a` は行内のカーソル桁を基準にするのに対し、この一覧の NORMAL には行内の桁カーソルが無く、画面にも出ていない。
+桁を記憶させると「押すまでどこへ入るか分からない」キーになるため、状態を持たない 2 対 2 の割当（`i` 系は先頭、`a` 系は末尾）とし、いつ押しても同じ位置に入ることを優先する。
 確定は `Enter` / `Esc` / blur のいずれでも行う。
 `Esc` も全体方針「Esc = 確定」（第 5 章冒頭）に従い、取り消しではなく確定として扱う。
 行内編集に明示的な破棄の導線は無いが、確定した操作は `updateTitle` Op として undo 履歴（第 5.2 節）へ記録されるため、`u` で直前のタイトルへ戻せる。
@@ -824,7 +828,7 @@ IME 変換確定の `Enter` / `Esc` は `isComposing` を見て編集の確定�
 `Esc` はタイトル・説明・期日のいずれも確定として処理する（全体方針「Esc = 確定」、第 5 章冒頭）。
 
 タイトルの確定は `onCommitTitle`（`commitInlineTitleEdit`、第 5.2 節）を呼ぶ。
-空文字（トリム後）のまま `Esc` を押した場合は確定できないため、行内タイトル編集（`i`/`A`、第 6.4 節）の空 `Esc` と同じくインラインエラーを出して編集領域に留まり、フォーカスも一覧へ戻さない。
+空文字（トリム後）のまま `Esc` を押した場合は確定できないため、行内タイトル編集（第 6.4 節）の空 `Esc` と同じくインラインエラーを出して編集領域に留まり、フォーカスも一覧へ戻さない。
 期日の確定は `onCommitDueDate`（`commitDueDateEdit`、第 5.2 節）を呼ぶ。
 期日には空文字禁止のような検証がなく（空文字は「期日なし」として常に確定できる）、`Esc` は必ず確定して一覧へフォーカスを戻す。
 
@@ -843,7 +847,7 @@ IME 変換確定の `Enter` / `Esc` は `isComposing` を見て編集の確定�
 `DetailPane` はこれを `onEscapeToOutline` として props で受け取り、各編集領域のローカルな `Esc` ハンドラから呼ぶ。
 `focusOutlineList` はまずカーソル行（`[data-cursor="true"] [role="option"]`。第 6.4 節・`KeymapHelpOverlay` の `resolveRestoreTarget` と同じ探索対象）を探し、見つかればそこへ `focus()` する。
 カーソル未選択などで見つからない場合は、一覧のスクロールコンテナ（`data-role="outline-scroll"`。`tabIndex={-1}` を付けて `focus()` 可能にしてある）へ戻す。
-第 6.4 節の行内タイトル編集（`i` / `A` の `Esc` / `Enter` 終了時）のフォーカス復帰も、同じ `focusOutlineList` を `onFocusOutlineList` として受け取って呼ぶ。
+第 6.4 節の行内タイトル編集（`Esc` / `Enter` での終了時）のフォーカス復帰も、同じ `focusOutlineList` を `onFocusOutlineList` として受け取って呼ぶ。
 
 フォーカスが一覧側の要素（`input` / `textarea` / `contenteditable` ではない要素）へ移ると、`isEditableTarget`（第 6.2 節）の抑止が外れ、document の keydown ハンドラが再びキーを受け取る。
 `focusOutlineList` の呼び出しは、この抑止を外すための blur だけでは行われない「フォーカス位置を一覧側へ明示する」ことを目的としており、フォーカス復帰そのものは blur の時点で（抑止が外れる意味では）既に完了している。
@@ -883,7 +887,7 @@ app/page.tsx                          [Server Component]
       ├ OutlinePane                   [Client] (DndContext / SortableContext)
       │   ├ DependencyRail            [Client] (SVG)
       │   └ OutlineRow (繰り返し)      [Client]
-      │       └ InlineTitleEditor     [Client] (i / A で編集中の行のみ。第 6.4 節)
+      │       └ InlineTitleEditor     [Client] (i / I / a / A で編集中の行のみ。第 6.4 節)
       ├ StatusLine                    [Client]
       │   └ LogoutButton              [Client]
       ├ PaneDivider                   [Client] (2 ペインの幅比ドラッグハンドル)

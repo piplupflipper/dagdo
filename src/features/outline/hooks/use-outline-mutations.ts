@@ -286,7 +286,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
     /**
      * タイトル変更の確定。タイトルが変わっていなければ Server Action を投げずに編集だけ畳む
      *
-     * 行内タイトル編集 (`i`/`A`) と DetailPane のタイトル編集の両方から呼ぶ共通ハンドラである
+     * 行内タイトル編集 (`i` / `I` / `a` / `A`) と DetailPane のタイトル編集の両方から呼ぶ共通ハンドラである
      * (どちらも同じ `updateTitle` Op を経由する単一の保存経路、docs/frontend-design.md §5.2)。
      * DetailPane 側には行内編集の state (`inlineTitleEdit`) が無いため、`setInlineTitleEdit(null)` は
      * その経路では実質 no-op (既に null) になるだけで害はない。

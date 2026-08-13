@@ -18,7 +18,7 @@ export type OutlineKeymapHandlers = {
     completeSelection: () => void;
     /** `o`/`O`。カーソル行の下/上に同じ actual parent の兄弟として createTask する */
     createSibling: (placement: SiblingPlacement) => void;
-    /** `i`/`A`。カーソル行のタイトルの行内編集を開始する (キャレット位置は先頭/末尾) */
+    /** `i`/`I`/`a`/`A`。カーソル行のタイトルの行内編集を開始する (キャレット位置は先頭/末尾) */
     startInlineTitleEdit: (caret: InlineTitleCaret) => void;
     /** `Enter`。DetailPane の編集領域へフォーカスを移す */
     focusDetailEditor: () => void;
@@ -131,7 +131,12 @@ export const outlineKeymap: readonly KeymapEntry[] = [
     // ここに run を持たせても呼ばれない。
     // Escape は以前「取り消す」だったが、確定に変更した (docs/frontend-design.md §6.4)。破棄の導線は無くなるが、
     // 確定後は `u` (undo) で直前のタイトルへ戻せるため実害はない
+    // vim の 4 キーをすべて持つが、行内の桁カーソルという概念がこの一覧の NORMAL には無いため、
+    // 桁を記憶する vim 忠実版は採らず「i 系は先頭、a 系は末尾」の 2 対 2 に割り当てる (2026-08-13 の判断)。
+    // いつ押しても同じ位置に入るので予測でき、`i` は前・`a` は後ろという vim の直感とも矛盾しない
     { keys: "i", mode: "NORMAL", category: "行内編集", description: "カーソル行のタイトルを行内編集 (キャレットは先頭)", run: ({ handlers }) => handlers.startInlineTitleEdit("start") },
+    { keys: "I", mode: "NORMAL", category: "行内編集", description: "カーソル行のタイトルを行内編集 (キャレットは先頭)", run: ({ handlers }) => handlers.startInlineTitleEdit("start") },
+    { keys: "a", mode: "NORMAL", category: "行内編集", description: "カーソル行のタイトルを行内編集 (キャレットは末尾)", run: ({ handlers }) => handlers.startInlineTitleEdit("end") },
     { keys: "A", mode: "NORMAL", category: "行内編集", description: "カーソル行のタイトルを行内編集 (キャレットは末尾)", run: ({ handlers }) => handlers.startInlineTitleEdit("end") },
     { keys: "Enter", mode: "NORMAL", category: "行内編集", description: "行内編集を確定 (詳細ペインへは移らない)" },
     { keys: "Escape", mode: "NORMAL", category: "行内編集", description: "行内編集を確定する (取り消しではない。元に戻すには u)" },

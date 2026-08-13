@@ -60,7 +60,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
      */
     const [isHelpOpen, setIsHelpOpen] = useState(false);
     /**
-     * `i` / `A` によるタイトルの行内編集の状態 (docs/frontend-design.md §6.1)
+     * `i` / `I` / `a` / `A` によるタイトルの行内編集の状態 (docs/frontend-design.md §6.1)
      *
      * ヘルプ開閉と同じく `OutlineMode` にもストアにも持たせず、ここで 1 個の値として持つ。
      * 編集中はフォーカスが input にあり、dispatcher が `isEditableTarget` で手前から素通しするため、
@@ -206,7 +206,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         redo,
     } = useOutlineMutations({ userId, tasks: displayTasks, tasksById, dependencies, cursorTask, pendingCreate, applyOptimisticAction, setInlineTitleEdit });
 
-    /** `i` / `A`。カーソル行のタイトルの行内編集を開始する。実際のフォーカス移動は InlineTitleEditor の callback ref が行う */
+    /** `i` / `I` / `a` / `A`。カーソル行のタイトルの行内編集を開始する。実際のフォーカス移動は InlineTitleEditor の callback ref が行う */
     const startInlineTitleEdit = (caret: InlineTitleCaret): void => {
         if (cursorTask === null) {
             return;

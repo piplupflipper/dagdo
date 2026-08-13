@@ -10,7 +10,7 @@ describe("resolveCaretRange", () => {
         expect(resolveCaretRange({ caret: "end", valueLength: 5 })).toEqual({ start: 5, end: 5 });
     });
 
-    it("いずれも選択範囲を持たない (vim の i / A に倣い全選択にはしない)", () => {
+    it("いずれも選択範囲を持たない (行内編集の 4 キーはいずれも全選択にしない)", () => {
         for (const caret of ["start", "end"] as const) {
             const { start, end } = resolveCaretRange({ caret, valueLength: 3 });
             expect(start, caret).toBe(end);

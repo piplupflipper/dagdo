@@ -191,6 +191,34 @@ describe("新規タスク", () => {
     });
 });
 
+/**
+ * 行内タイトル編集を開始する 4 キー (Issue #63)
+ *
+ * テーブル側の対応は `keymap-table.test.ts` が固定しているので、ここでは
+ * 「キーを押すと実際に input が現れ、キャレットが指定の位置に置かれる」ところまでを通しで見る
+ */
+describe("行内タイトル編集のキー", () => {
+    const cases: readonly { key: string; caret: number }[] = [
+        { key: "i", caret: 0 },
+        { key: "I", caret: 0 },
+        { key: "a", caret: "最初のタスク".length },
+        { key: "A", caret: "最初のタスク".length },
+    ];
+
+    for (const { key, caret } of cases) {
+        it(`\`${key}\` はカーソル行のタイトルを行内編集し、キャレットを ${caret} に置く`, () => {
+            renderShell();
+            fireEvent.click(screen.getByText("最初のタスク"));
+            fireEvent.keyDown(document, { key });
+
+            const input = screen.getByRole("textbox", { name: "タイトルを行内編集" });
+            expect(input).toHaveProperty("value", "最初のタスク");
+            expect(input).toHaveProperty("selectionStart", caret);
+            expect(document.activeElement).toBe(input);
+        });
+    }
+});
+
 describe("行の操作", () => {
     it("完了の切り替えは complete Op を Server Action の振り分けへ流す", async () => {
         renderShell();

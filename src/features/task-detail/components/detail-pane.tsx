@@ -44,7 +44,7 @@ export type DetailPaneProps = {
     /**
      * タイトル編集の確定 (docs/frontend-design.md §5.2)
      *
-     * `OutlineShell` の `commitInlineTitleEdit` を props でそのまま渡す。行内タイトル編集 (`i`/`A`) と
+     * `OutlineShell` の `commitInlineTitleEdit` を props でそのまま渡す。行内タイトル編集 (第 6.4 節) と
      * 同じ `updateTitle` Op を経由する単一の保存経路であり、変更が無ければ Server Action を投げない判定も
      * 呼び出し先が担うため、本コンポーネント側では変更有無を判定せずに常に呼んでよい
      */
@@ -89,7 +89,7 @@ const STATUS_BADGE_CLASS: Record<TaskStatus, string> = {
  *
  * 各編集領域の `Esc` keydown は、全体方針「Esc = 確定して一覧へフォーカスを戻す」
  * (docs/frontend-design.md §5) に従い、タイトル・説明・期日のいずれも確定として処理する (第 6.5 節)。
- * タイトルは空文字のまま `Esc` を押した場合、行内タイトル編集 (`i`/`A`) の空 `Esc` と同じく
+ * タイトルは空文字のまま `Esc` を押した場合、行内タイトル編集 (第 6.4 節) の空 `Esc` と同じく
  * インラインエラーを出して編集領域に留まり、フォーカスも一覧へ戻さない。
  * 依存先追加候補の `select` だけは方針からの意図的な例外としてキャンセルのままとする。
  * いずれの場合も、確定またはキャンセルの処理が終わった後は `onEscapeToOutline`（`OutlineShell` の共通ヘルパー）で
