@@ -44,6 +44,10 @@ fe-build: ## 本番ビルドを実行する
 fe-check: ## 品質ゲート (biome + tsc + knip) を実行する
 	npm run check
 
+.PHONY: fe-test
+fe-test: ## 単体テスト (vitest) を実行する
+	npm test
+
 .PHONY: fe-format
 fe-format: ## biome で整形する
 	npm run format
@@ -82,4 +86,4 @@ db-push: ## migration を hosted Supabase へ反映する (要 supabase link。s
 ##@ 複合
 
 .PHONY: check
-check: fe-check db-test ## 全品質ゲート (fe-check + db-test) を実行する
+check: fe-check fe-test db-test ## 全品質ゲート (fe-check + fe-test + db-test) を実行する
