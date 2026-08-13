@@ -22,7 +22,7 @@ import { MobileDetailSheet } from "@/features/task-detail/components/mobile-deta
 import { useOutlineStore } from "@/store/outline-store";
 import type { AppTask, TaskDependency } from "@/types/task";
 
-export type OutlineShellProps = {
+type OutlineShellProps = {
     userId: string;
     initialTasks: AppTask[];
     initialDependencies: TaskDependency[];

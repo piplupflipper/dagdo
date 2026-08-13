@@ -4,7 +4,7 @@ import { LogoutButton } from "@/features/auth/components/logout-button";
 import type { OutlineMode } from "@/store/types";
 import type { AppTask } from "@/types/task";
 
-export type StatusLineProps = {
+type StatusLineProps = {
     mode: OutlineMode;
     cursorTask: AppTask | null;
     totalCount: number;
@@ -20,7 +20,7 @@ const MODE_LABEL: Record<OutlineMode, string> = {
 };
 
 /**
- * モード・カーソル情報・件数・エラーを表示するステータス行 (docs/frontend-design.md §7.1、実装要点 6 / モック p26)
+ * モード・カーソル情報・件数・エラーを表示するステータス行 (docs/frontend-design.md §7.1 / モック p26)
  *
  * errorMessage が非 null の間はそれを最優先で表示し、なければ infoMessage、
  * それもなければカーソル行の簡易情報を表示する

@@ -7,7 +7,7 @@ import type { InlineTitleCaret } from "@/features/outline/lib/inline-title-edit"
 import { isOverdue } from "@/lib/date/timezone";
 import type { AppTask } from "@/types/task";
 
-export type OutlineRowProps = {
+type OutlineRowProps = {
     row: OutlineTreeRow;
     registerRow: (taskId: string) => (element: HTMLDivElement | null) => void;
     isCursor: boolean;

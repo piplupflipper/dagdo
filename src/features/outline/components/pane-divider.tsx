@@ -2,7 +2,7 @@ import { type JSX, type PointerEvent as ReactPointerEvent, type RefObject, useRe
 import { clampPaneRatio, computePaneRatioFromPointer, MAX_LEFT_PANE_RATIO, MIN_LEFT_PANE_RATIO } from "@/features/outline/lib/pane-ratio";
 
 /** PaneDivider の props */
-export type PaneDividerProps = {
+type PaneDividerProps = {
     /** 2 ペインを並べる行コンテナへの参照。ポインタ位置を比率へ変換する基準の幅・左端をここから測る */
     containerRef: RefObject<HTMLDivElement | null>;
     /** 現在の左ペイン比率 (%)。ドラッグ中は都度これを更新した値が渡ってくる */

@@ -43,9 +43,9 @@ export type OutlineKeymapHandlers = {
     outdentCursor: () => void;
     /** `dd`。ゴミ箱へ softDeleteTask する */
     softDeleteCursor: () => void;
-    /** `u`。undo スタックの末尾を実行する (Phase 2、docs/frontend-design.md §5.2) */
+    /** `u`。undo スタックの末尾を実行する (docs/frontend-design.md §5.2) */
     undo: () => void;
-    /** `U`。redo スタックの末尾を実行する (Phase 2、docs/frontend-design.md §5.2) */
+    /** `U`。redo スタックの末尾を実行する (docs/frontend-design.md §5.2) */
     redo: () => void;
     /** `?`。キーバインドのヘルプオーバーレイを開く */
     openHelp: () => void;
@@ -120,7 +120,7 @@ export const outlineKeymap: readonly KeymapEntry[] = [
     { keys: "O", mode: "NORMAL", category: "編集", description: "カーソル行の上に新規タスクを作成", run: ({ handlers }) => handlers.createSibling("above") },
     { keys: "Enter", mode: "NORMAL", category: "編集", description: "詳細ペインの編集領域へフォーカスを移す", run: ({ handlers }) => handlers.focusDetailEditor() },
     { keys: "d d", mode: "NORMAL", category: "編集", description: "カーソル行をゴミ箱へ移動", run: ({ handlers }) => handlers.softDeleteCursor() },
-    // undo/redo は Server Action が成功で確定した操作のみを対象とする履歴スタックを辿る (Phase 2、docs/frontend-design.md §5.2)。
+    // undo/redo は Server Action が成功で確定した操作のみを対象とする履歴スタックを辿る (docs/frontend-design.md §5.2)。
     // `U` は Shift 付きだが key-sequence.ts は Shift を接頭辞にせず event.key へ反映済みの値をそのまま使うため、`u` と衝突しない
     { keys: "u", mode: "NORMAL", category: "編集", description: "undo (直前の確定操作を取り消す)", run: ({ handlers }) => handlers.undo() },
     { keys: "U", mode: "NORMAL", category: "編集", description: "redo (取り消した操作をやり直す)", run: ({ handlers }) => handlers.redo() },
@@ -129,7 +129,7 @@ export const outlineKeymap: readonly KeymapEntry[] = [
     // Enter / Escape は InlineTitleEditor のローカルハンドラが処理するためのドキュメント専用エントリ (run なし)。
     // 編集中はフォーカスが input にあり、dispatcher は isEditableTarget で手前から素通しするため、
     // ここに run を持たせても呼ばれない。
-    // Escape は以前「取り消す」だったが、確定に変更した (改修 2)。破棄の導線は無くなるが、
+    // Escape は以前「取り消す」だったが、確定に変更した (docs/frontend-design.md §6.4)。破棄の導線は無くなるが、
     // 確定後は `u` (undo) で直前のタイトルへ戻せるため実害はない
     { keys: "i", mode: "NORMAL", category: "行内編集", description: "カーソル行のタイトルを行内編集 (キャレットは先頭)", run: ({ handlers }) => handlers.startInlineTitleEdit("start") },
     { keys: "A", mode: "NORMAL", category: "行内編集", description: "カーソル行のタイトルを行内編集 (キャレットは末尾)", run: ({ handlers }) => handlers.startInlineTitleEdit("end") },

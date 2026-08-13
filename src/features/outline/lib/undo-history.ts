@@ -1,14 +1,14 @@
 import type { OutlineOp } from "@/features/outline/lib/outline-ops";
 
 /**
- * undo / redo の履歴管理 (docs/frontend-design.md §5.2、Phase 2)
+ * undo / redo の履歴管理 (docs/frontend-design.md §5.2)
  *
  * ここに置くのは純粋なデータ構造 (スタック) の操作のみである。
  * 逆操作の Op 列の組み立ては invert-op.ts、Op の実行 (楽観適用 + Server Action) と
  * 「いつ積むか」の判断は outline-shell.tsx の `runOp` が持つ。
  *
  * 対象はアウトライン操作 (作成・完了・タイトル変更・移動・並べ替え・ゴミ箱への移動) に加え、
- * DetailPane の説明・期日の編集 (改修 3、`updateDescription` / `updateDueDate` Op) を含む。
+ * DetailPane の説明・期日の編集 (`updateDescription` / `updateDueDate` Op) を含む。
  * DetailPane の依存関係の編集、ゴミ箱画面からの復元・完全削除は依然として履歴対象外 (将来拡張)。
  * 依存関係は Op リデューサそのものの対象外であり、undo 履歴だけの制約ではない
  */

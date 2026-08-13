@@ -13,7 +13,7 @@
  * 2. settle 前 (tempId がまだ pending) に Enter/Esc でタイトル編集を確定すると、以前は
  *    `isPendingTaskId` のガードが入力を黙って捨てていた。`queuePendingTitle` で tempId 宛に保留し、
  *    settle 後に `takePendingTitle` で取り出して実 id の通常パイプライン (楽観適用 + updateTask + undo 履歴)
- *    へ流す。create が失敗した場合は `discardPendingTitle` で保留分を破棄する
+ *    へ流す。create が失敗した場合は `takePendingTitle` の戻り値を捨てて保留分を破棄する
  */
 
 /** tempId → 実 id の対応表と、settle 前に確定されたタイトルの保留キュー */
@@ -68,7 +68,7 @@ export const pruneConfirmedRenames = (registry: PendingCreateRegistry, isRowPres
  *
  * `createSibling` の settle で cursor / inlineTitleEdit の id を tempId → 実id へ切り替えた直後、
  * revalidate 到着前の一瞬だけ `optimisticTasks` (`byId` の変換元) がまだ実id の行を持たず、
- * tempId の行しか持たない場合がある (診断 2)。この間だけ tempId 側の値へフォールバックし、
+ * tempId の行しか持たない場合がある。この間だけ tempId 側の値へフォールバックし、
  * 呼び出し元 (`OutlineShell` の `cursorTask` 解決) に「行が消えた」と見せない。
  * `reidentify` は見つかった値の id 相当のフィールドを要求された `id` (実id) へ書き替える
  * (呼び出し元がフォールバック値の `id` を tempId のまま使って Server Action を呼んでしまわないようにするため)

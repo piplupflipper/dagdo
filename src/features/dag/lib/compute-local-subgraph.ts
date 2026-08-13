@@ -14,7 +14,7 @@ export type LocalSubgraphEdge = {
 };
 
 /** compute-local-subgraph.ts の出力 */
-export type LocalSubgraph = {
+type LocalSubgraph = {
     nodes: LocalSubgraphNode[];
     edges: LocalSubgraphEdge[];
 };

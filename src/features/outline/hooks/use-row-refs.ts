@@ -3,7 +3,7 @@ import { type RefObject, useRef } from "react";
 /** taskId → 行の HTMLElement を保持する Map への参照 */
 export type RowRefMap = Map<string, HTMLDivElement>;
 
-export type UseRowRefsResult = {
+type UseRowRefsResult = {
     /** 行コンポーネントの ref コールバックを taskId 単位で生成する */
     registerRow: (taskId: string) => (element: HTMLDivElement | null) => void;
     /** DependencyRail 等、位置測定側が読む Map への参照 (再レンダーを発生させない) */

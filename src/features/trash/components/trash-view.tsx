@@ -5,7 +5,7 @@ import type { JSX } from "react";
 import type { TrashTask } from "@/types/task";
 import { TrashRow } from "./trash-row";
 
-export type TrashViewProps = {
+type TrashViewProps = {
     tasks: TrashTask[];
 };
 
