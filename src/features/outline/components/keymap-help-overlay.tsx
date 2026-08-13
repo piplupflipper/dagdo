@@ -29,7 +29,7 @@ const resolveRestoreTarget = (previous: HTMLElement | null): HTMLElement | null 
     return document.querySelector<HTMLElement>('[data-cursor="true"] [role="option"]');
 };
 
-export type KeymapHelpOverlayProps = {
+type KeymapHelpOverlayProps = {
     isOpen: boolean;
     /** キー操作以外の閉じる導線 (閉じるボタン) から呼ぶ */
     onClose: () => void;

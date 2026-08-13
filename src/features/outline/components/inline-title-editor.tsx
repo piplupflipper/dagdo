@@ -23,7 +23,7 @@ export type InlineTitleEditorProps = {
     /**
      * 空文字のまま blur した場合の取り消し (空文字は保存できないため元のタイトルへ戻す)
      *
-     * 以前は `Esc` もこちらを呼んでいたが、`Esc` を確定に変更した (改修 2) ため、
+     * 以前は `Esc` もこちらを呼んでいたが、`Esc` を確定に変更した (docs/frontend-design.md §6.4) ため、
      * 現在この関数を呼ぶ経路は空文字 blur のみである
      */
     onCancel: () => void;
@@ -43,7 +43,7 @@ export type InlineTitleEditorProps = {
  * 編集中かどうかと下書き文字列 (`value`) は `OutlineShell` の `inlineTitleEdit` state が持つ
  * (バグ修正で `value` を controlled にした。理由は `InlineTitleEditorProps.value` のコメント参照)。
  * このコンポーネント自身が持つローカル state は空文字エラーのみである。確定は `Enter` / `Esc` / blur の
- * いずれでも行う (改修 2。以前は `Esc` が取り消しだったが、確定に変更した)。
+ * いずれでも行う (以前は `Esc` が取り消しだったが、確定に変更した。docs/frontend-design.md §6.4)。
  * `Esc` によって明示的な破棄の導線は無くなるが、確定後は `u` (undo) で直前のタイトルへ戻せるため
  * 実害はない (docs/frontend-design.md §5.2 の undo 履歴、Op は `updateTitle`)。
  * `Enter` での確定は NORMAL に戻すだけで DetailPane へは連鎖させない (改めて `Enter` を押す仕様)
@@ -117,7 +117,7 @@ export const InlineTitleEditor = ({ value, caret, onDraftChange, onCommit, onCan
         }
         if (event.key === "Enter" || event.key === "Escape") {
             event.preventDefault();
-            // Esc も確定として扱う (改修 2)。空文字のままなら commit() が弾いてインラインエラーを出し、
+            // Esc も確定として扱う (docs/frontend-design.md §6.4)。空文字のままなら commit() が弾いてインラインエラーを出し、
             // Enter で空文字のまま確定しようとした場合と同じ挙動になる (編集は続行、行へは戻さない)
             commit(true);
         }

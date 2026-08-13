@@ -37,19 +37,19 @@ export type OutlineOp =
           type: "restore";
           taskId: string;
           /**
-           * softDelete で配列から除去された行のスナップショット (指示書の型スケッチからの逸脱、詳細は下記)
+           * softDelete で配列から除去された行のスナップショット (taskId だけでは足りない理由は下記)
            *
            * `softDelete` は app_tasks から行そのものを除去する (下記 `applyOutlineOp` 参照)。
            * そのため `restore` を taskId だけで表現すると、title / parent_id / position などを
            * 再構成する材料が無くなってしまう。undo (softDelete の逆操作としての restore) を
            * 楽観的に即時表示するには、削除される直前の行を丸ごと閉じ込めて渡す必要がある。
-           * これが Phase 2 の undo 実装 (undo-history.ts) で採用した設計であり、
+           * これが undo 実装 (undo-history.ts) で採用した設計であり、
            * 削除直前の optimisticTasks から該当行を取得して `snapshot` に詰める
            */
           snapshot: AppTask;
       };
 
-export type ApplyOutlineOpOptions = {
+type ApplyOutlineOpOptions = {
     /**
      * tasks が 0 件のときに `create` の `user_id` を決める代替値
      *

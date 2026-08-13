@@ -4,7 +4,7 @@ import { restoreTask } from "@/features/task/actions/restore-task";
 import { formatDateTime } from "@/lib/date/timezone";
 import type { TrashTask } from "@/types/task";
 
-export type TrashRowProps = {
+type TrashRowProps = {
     task: TrashTask;
 };
 

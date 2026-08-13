@@ -2,7 +2,7 @@ import { type JSX, type RefObject, useEffect, useRef, useState } from "react";
 import type { RowRefMap } from "@/features/outline/hooks/use-row-refs";
 import type { AppTask, TaskDependency } from "@/types/task";
 
-export type DependencyRailProps = {
+type DependencyRailProps = {
     containerRef: RefObject<HTMLDivElement | null>;
     rowMapRef: RefObject<RowRefMap>;
     visibleTaskIds: readonly string[];
@@ -35,7 +35,7 @@ type GeometryResult = {
 const RAIL_X = 10;
 const RESIZE_DEBOUNCE_MS = 100;
 
-/** タスクの状態から依存レールの線色を決める。blocked への線は琥珀、完了区間はグレーにする (docs/frontend-design.md §7.2、実装要点 5) */
+/** タスクの状態から依存レールの線色を決める。blocked への線は琥珀、完了区間はグレーにする (docs/frontend-design.md §7.2) */
 const lineColorFor = (fromTask: AppTask | undefined, toTask: AppTask | undefined): string => {
     if (toTask?.is_blocked === true) {
         return "var(--color-blocked)";
@@ -89,7 +89,7 @@ const computeGeometry = (container: HTMLDivElement, rowMap: RowRefMap, inputs: G
 };
 
 /**
- * ガターの依存レール SVG (docs/frontend-design.md §7.2、実装要点 5)
+ * ガターの依存レール SVG (docs/frontend-design.md §7.2)
  *
  * use-row-refs が保持する行の DOM 位置から、依存元 (depends_on_task_id) → 依存先 (task_id) の
  * 縦方向エッジを描画する。再計算はマウント時即時 / スクロール時 rAF スロットル /

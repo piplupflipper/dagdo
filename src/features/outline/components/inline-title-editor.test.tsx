@@ -88,7 +88,7 @@ describe("確定と取り消し", () => {
         expect(onCommit).toHaveBeenCalledWith("余白つき");
     });
 
-    it("Esc は変更後のタイトルで確定し、フォーカスを行へ戻す (改修 2。以前は取り消しだった)", () => {
+    it("Esc は変更後のタイトルで確定し、フォーカスを行へ戻す (以前は取り消しだった)", () => {
         const { input, row, onCommit, onCancel } = renderEditor();
         fireEvent.change(input, { target: { value: "Esc で確定される" } });
         fireEvent.keyDown(input, { key: "Escape" });

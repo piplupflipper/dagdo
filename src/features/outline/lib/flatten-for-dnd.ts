@@ -2,7 +2,7 @@ import type { OutlineTreeRow } from "@/features/outline/lib/build-tree";
 import type { AppTask } from "@/types/task";
 
 /** dnd-kit の useSortable に渡すフラット項目 (docs/frontend-design.md §9) */
-export type FlattenedDndItem = {
+type FlattenedDndItem = {
     id: string;
     /** actual parent (task.parent_id) を辿った階層数。表示用の depth (effective_parent_id 由来) とは区別する */
     depth: number;

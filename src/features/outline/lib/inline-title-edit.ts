@@ -26,7 +26,7 @@ export type InlineTitleEdit = {
 };
 
 /** `input.setSelectionRange` へ渡す選択範囲 */
-export type CaretRange = {
+type CaretRange = {
     start: number;
     end: number;
 };

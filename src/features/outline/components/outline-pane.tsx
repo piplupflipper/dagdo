@@ -9,7 +9,7 @@ import { computeDropResult, flattenForDnd, type ReparentResult, type SiblingReor
 import type { InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
 import type { AppTask, TaskDependency } from "@/types/task";
 
-export type OutlinePaneProps = {
+type OutlinePaneProps = {
     visibleRows: readonly OutlineTreeRow[];
     tasks: readonly AppTask[];
     dependencies: readonly TaskDependency[];
