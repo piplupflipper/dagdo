@@ -166,6 +166,8 @@ src/
     layout.tsx                      # 全体レイアウト。夜空背景の設置と globals.css の読み込み
     globals.css                     # Tailwind v4 @theme トークン定義（第 10 章）
     page.tsx                        # メイン画面 (RSC)。getOutlineData → OutlineShell
+    error.tsx                       # ページ配下のエラー境界 (第 8.4 節)
+    global-error.tsx                # ルートレイアウトごと差し替わるエラー境界 (第 8.4 節)
     login/
       page.tsx                      # ログイン画面 (req.md §30 の /login)
     trash/
@@ -202,6 +204,7 @@ src/
         sibling-rank.ts             # 同一 actual parent 内の現在 rank（逆操作の材料）
         undo-history.ts             # undo / redo の履歴スタック（純粋なスタック操作）
         action-error.ts             # ステータス行に出すエラー文言の組み立て (第 8.3 節)
+        action-rejection.ts         # Server Action の reject を失敗形の値へ変換する (第 8.4 節)
         blocking-cause.ts           # TASK_BLOCKED の原因タスクを手元の依存関係から求める
         keymap-table.ts             # キー一覧の宣言的テーブル（単一の正、第 6.2 節）
         keymap-trie.ts              # テーブルから trie を構築し 1 打鍵ぶん遷移させる
@@ -267,7 +270,7 @@ src/
         restore-task.ts
         permanently-delete-task.ts
       lib/
-        define-task-action.ts       # Server Action の定型を集約する高階関数 (第 8.4 節)
+        define-task-action.ts       # Server Action の定型を集約する高階関数 (第 8.5 節)
         action-result.ts            # ActionResult<T> と TaskErrorCode (第 8.3 節)
         map-db-error.ts             # SQLSTATE / メッセージ → TaskErrorCode 変換 (第 8.3 節)
         queries.ts                  # RSC が呼ぶ読み取り関数 (第 8.1 節)
@@ -298,7 +301,7 @@ src/
 ```
 
 Server Actions は entity 単位（`task` feature）に集約し、UI 側の `outline` / `task-detail` / `dag` / `search` / `trash` 各 feature はこれを import して利用する。
-理由は、11 個の Action が全て `tasks` / `task_dependencies` の 2 テーブルのみを操作し、エラー変換（`map-db-error.ts`）と定型処理（`define-task-action.ts`、第 8.4 節）を共通化する必要があるためである。
+理由は、11 個の Action が全て `tasks` / `task_dependencies` の 2 テーブルのみを操作し、エラー変換（`map-db-error.ts`）と定型処理（`define-task-action.ts`、第 8.5 節）を共通化する必要があるためである。
 一方で `moveTask` / `reorderTasks` は構造操作であり `outline` feature（dnd-kit・`</>`/`J`/`K` の起点）から直接呼ばれるが、実装自体は `task/actions/` に置き、呼び出し元を分けても実装を分けない。
 
 Supabase client は `req.md` §36 が定める 2 種分離をそのままディレクトリへ反映する。
@@ -483,7 +486,7 @@ Op に ID 配列を持たせないのは、undo 履歴へ積む逆操作を「�
 1. 実行前のタスク一覧（`optimisticTasks`）を `tasksSnapshot` として固定する
 2. `invertOutlineOp(op, tasksSnapshot)`（`features/outline/lib/invert-op.ts`）で逆操作の Op 列を組み立てる。組み立てられない場合（`create` / `restore`、対象行が手元に無い場合）は楽観適用も Server Action も行わずに終える
 3. `applyOptimisticAction(op)` で楽観適用する
-4. `callServerForOp(op, tasksSnapshot)`（`features/outline/lib/dispatch-op.ts`）で対応する Server Action を呼ぶ
+4. `callServerForOp(op, tasksSnapshot)`（`features/outline/lib/dispatch-op.ts`）で対応する Server Action を呼ぶ。await は `runServerAction`（`features/outline/lib/action-rejection.ts`）で包み、reject も失敗を表す値として受け取る（第 8.4 節）
 5. 失敗ならステータス行（`StatusLine`）へエラー文言を出す。成功なら `{ label, undoOps: 逆操作の Op 列, redoOps: [op] }` を undo 履歴へ積む
 
 `invertOutlineOp` は Op と実行前のスナップショットだけを受け取る純関数であり、「いつ積むか」（Server Action の成功時のみ）の判断は `runOp` に残す。
@@ -1051,7 +1054,53 @@ SQLSTATE `ET001`〜`ET007` は migration が定める契約であり（`supabase
 `ActionResult` は失敗時に `code` と `message` しか持たない。
 `TASK_BLOCKED` の原因タスクは載らないため、必要な側（`blocking-cause.ts`）が手元の依存関係から求める（第 5.2 節）。
 
-### 8.4 Server Action の定型
+### 8.4 Server Action の reject とエラー境界
+
+第 8.3 節の `ActionResult` は「リクエストがサーバーへ届き、DB が弾いた」失敗だけを表す。
+Server Action の Promise そのものが reject する場合はこの契約の外側にあり、`ActionResult` の値は返らない。
+reject の原因は、デプロイによる Server Action ID の版ずれ、サーバー側の未捕捉例外、ネットワーク断である。
+
+書き換え操作の await は `startTransition` の中にあるため（第 5.2 節）、reject をそのままにすると例外が transition の外へ抜け、最寄りの error boundary へ届く。
+1 操作の失敗で画面全体がエラー表示へ切り替わっていたのはこのためである(Issue #66)。
+`startTransition` の中の未処理の例外が最寄りの error boundary へ上がることは Next.js 同梱ドキュメント（`node_modules/next/dist/docs/01-app/01-getting-started/10-error-handling.md`）が明示している。
+
+`features/outline/lib/action-rejection.ts` の `runServerAction` で await を包み、reject を失敗を表す値へ変換する。
+
+```typescript
+type ActionRejection = { ok: false; rejected: true; message: string };
+type ActionOutcome<T = void> = ActionResult<T> | ActionRejection;
+```
+
+`ActionRejection` は `code` を持たない。
+`TaskErrorCode` は migration が定める SQLSTATE `ET001`〜`ET007` と 1 対 1 に対応する契約であり（第 8.3 節）、そこへサーバーへ届かなかった失敗を足すとこの対応が崩れるためである。
+`use-outline-mutations.ts` が Server Action を await する 5 箇所（`runOp` / `completeSelection` / `createSibling` の作成とタイトル確定 / `runOpsForHistory`）はすべて `runServerAction` を通る。
+
+変換後は例外が transition の外へ出ないため、settle は `ok: false` のときと同じ経路を通る。
+`useOptimistic` のオーバーレイの巻き戻し（第 8.2 節 5b）も、`createSibling` の後始末（`tempId` 集合からの除去と保留タイトルの破棄、第 5.2 節）も、失敗の種類によらず同じ分岐で行われる。
+
+表示文言は reject の理由を 2 つに分けて組み立てる。
+
+| 判別 | ステータス行の文言 |
+|---|---|
+| 版ずれ | 新しいバージョンが公開されています。ページを再読み込みしてください |
+| それ以外 | サーバーとの通信に失敗しました。しばらくしてから再試行してください |
+
+版ずれの判別材料は、Error の `name` が `UnrecognizedActionError` であること、または message が `Failed to find Server Action` / `failed-to-find-server-action` を含むことである。
+Next.js 16.3.0 はこの状況で経路ごとに異なる Error を投げるため、両方を見る。
+fetch action ではサーバーが 404 と `x-nextjs-action-not-found: 1` を返し、クライアントのルーターが `UnrecognizedActionError` を投げる（`node_modules/next/dist/server/app-render/action-handler.js` の `handleUnrecognizedFetchAction`、`node_modules/next/dist/client/components/router-reducer/reducers/server-action-reducer.js`）。
+MPA action ではサーバー側が `Failed to find Server Action. This request might be from an older or newer deployment.` を投げる（同 `action-handler.js`）。
+`name` による判別は `next/navigation` の `unstable_isUnrecognizedActionError` と同じ判定であり、`lib/` をフレームワークに依存させない（第 4 章）ために import せず同等の述語を置いている。
+
+どちらの文言も `TaskErrorCode` の記号名を前置しない（`formatOutcomeError`、`features/outline/lib/action-error.ts`）。
+記号名は SQLSTATE を引くための手掛かりであり、対応する SQLSTATE を持たない失敗に付けると `req.md` §66 の表と突き合わせられない文字列になるためである。
+
+エラー境界そのものも `app/error.tsx` と `app/global-error.tsx` に置く。
+これが無いと、上記以外の描画時の失敗が Next.js 組み込みの全画面エラーページ（英語の「This page couldn't load / A server error occurred.」）に落ちる。
+`error.tsx` は同じ段の `layout.tsx` を包まないため、`layout.tsx` 自身の失敗は `global-error.tsx` が受ける。
+再試行の導線は `error.tsx` が `retry`（Next.js 16.3.0 で stable、`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/error.md`）、`global-error.tsx` はページの再読み込みである。
+`global-error.tsx` には `globals.css` が届かず Tailwind のクラスもセマンティックトークン（第 10 章）も効かないため、そこだけスタイルを inline で書き、色はパレット層の値を写している。
+
+### 8.5 Server Action の定型
 
 `req.md` §71 が Server Action の責務として挙げるのは、session 確認・DB/RPC 呼び出し・DB エラー変換・revalidation である。
 このうち DB/RPC 呼び出し以外は 11 本すべてで同じ形になるため、高階関数 `defineTaskAction`（`task/lib/define-task-action.ts`）へ集約する。
@@ -1183,7 +1232,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 実行は `make fe-test`（`npm test` = `vitest run`）であり、品質ゲート `make check` の 3 段目に入る（第 3.6 節）。
 
 テストは対象と同じディレクトリに置く。
-主な対象は `lib/` 配下の純関数であり、次の 25 ファイル・304 件がある。
+主な対象は `lib/` 配下の純関数であり、次の 26 ファイル・334 件がある。
 
 | 対象 | テストファイル |
 |---|---|
@@ -1195,6 +1244,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | 同一 actual parent 内の rank 解決 | `outline/lib/sibling-rank.test.ts` |
 | undo / redo の履歴スタック | `outline/lib/undo-history.test.ts` |
 | エラー表示文言の組み立て | `outline/lib/action-error.test.ts` |
+| Server Action の reject の失敗形への変換（第 8.4 節） | `outline/lib/action-rejection.test.ts` |
 | `TASK_BLOCKED` の原因タスク解決 | `outline/lib/blocking-cause.test.ts` |
 | keymap テーブルの整合（第 6.1 節との対応を含む） | `outline/lib/keymap-table.test.ts` |
 | trie の構築と 1 打鍵ぶんの待機状態遷移 | `outline/lib/keymap-trie.test.ts` |
@@ -1210,7 +1260,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | 同一論理行の付け替え判定 | `task/lib/temp-id-renames.test.ts` |
 | Asia/Tokyo 基準の日付整形と期限切れ判定 | `lib/date/timezone.test.ts` |
 | 行内タイトル編集のフォーカス遷移 | `outline/components/inline-title-editor.test.tsx` |
-| キー操作から Server Action までの結線、カーソル行とフォーカスの追従（第 6.6 節） | `outline/components/outline-shell.test.tsx` |
+| キー操作から Server Action までの結線、カーソル行とフォーカスの追従（第 6.6 節）、reject の受け止め（第 8.4 節） | `outline/components/outline-shell.test.tsx` |
 | 詳細ペインの編集状態の初期化 | `task-detail/components/detail-pane.test.tsx` |
 
 `components` 配下の 3 ファイルだけ `@testing-library/react` で描画して確かめる。
