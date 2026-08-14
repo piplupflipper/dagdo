@@ -15,6 +15,8 @@ import type { AppTask } from "@/types/task";
 
 const callServerForOpMock = vi.fn();
 const createTaskMock = vi.fn();
+/** VISUAL の一括完了 (`completeSelection`) だけは `callServerForOp` を通らず、この Action を直接呼ぶ */
+const completeTaskMock = vi.fn();
 
 vi.mock("@/features/outline/lib/dispatch-op", () => ({
     callServerForOp: (...args: unknown[]) => callServerForOpMock(...args),
@@ -22,7 +24,9 @@ vi.mock("@/features/outline/lib/dispatch-op", () => ({
 vi.mock("@/features/task/actions/create-task", () => ({
     createTask: (input: unknown) => createTaskMock(input),
 }));
-vi.mock("@/features/task/actions/complete-task", () => ({ completeTask: vi.fn() }));
+vi.mock("@/features/task/actions/complete-task", () => ({
+    completeTask: (input: unknown) => completeTaskMock(input),
+}));
 vi.mock("@/features/task/actions/update-task", () => ({ updateTask: vi.fn() }));
 // 詳細ペインの依存追加・削除と、StatusLine のログアウト。いずれも Server Action であり、
 // 素の import は認証まわりのサーバー専用モジュールまで辿ってしまうため差し替える
@@ -74,6 +78,7 @@ const renderShell = (): void => {
 beforeEach(() => {
     callServerForOpMock.mockResolvedValue({ ok: true, data: undefined });
     createTaskMock.mockResolvedValue({ ok: true, data: { id: "real-1" } });
+    completeTaskMock.mockResolvedValue({ ok: true, data: undefined });
     useOutlineStore.setState({
         mode: "NORMAL",
         cursorTaskId: null,
@@ -232,6 +237,70 @@ describe("行の操作", () => {
         fireEvent.keyDown(document, { key: "d" });
         fireEvent.keyDown(document, { key: "d" });
         await waitFor(() => expect(callServerForOpMock).toHaveBeenCalledWith({ type: "softDelete", taskId: "task-1" }, expect.anything()));
+    });
+});
+
+/**
+ * Server Action の reject (Issue #66)
+ *
+ * 修正前は `startTransition` の中の素の await が reject を素通しし、例外が error boundary まで抜けて
+ * 画面全体がエラー表示へ切り替わっていた。ここでは 1 操作の失敗として扱われること、
+ * すなわち例外が外へ出ずステータス行へ文言が出ること、楽観適用が `ok: false` のときと同じく巻き戻ることを見る。
+ * 巻き戻りは `useOptimistic` が transition の終了で行うものであり、失敗時に明示的な逆適用は行っていない
+ */
+describe("Server Action の reject", () => {
+    /** カーソル行のチェックボックス。完了の楽観適用が残っていれば `✓`、巻き戻っていれば空になる */
+    const firstToggleLabel = (): string => screen.getAllByRole("button", { name: "完了を切替" })[0]?.textContent ?? "";
+
+    it("版ずれの reject はステータス行へ再読み込みを促す文言を出し、楽観適用は巻き戻る", async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        callServerForOpMock.mockRejectedValue(new Error("Failed to find Server Action. This request might be from an older or newer deployment."));
+        renderShell();
+
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+
+        await waitFor(() => expect(screen.getByText("新しいバージョンが公開されています。ページを再読み込みしてください")).toBeTruthy());
+        // 巻き戻しは transition の終了に伴って起きるため、文言の表示と同じレンダーとは限らない
+        await waitFor(() => expect(firstToggleLabel()).toBe(""));
+        consoleError.mockRestore();
+    });
+
+    it("`ok: false` の失敗も同じく文言を出して巻き戻る (reject との差は文言だけ)", async () => {
+        callServerForOpMock.mockResolvedValue({ ok: false, code: "TASK_NOT_FOUND", message: "task not found" });
+        renderShell();
+
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+
+        await waitFor(() => expect(screen.getByText("TASK_NOT_FOUND — task not found")).toBeTruthy());
+        await waitFor(() => expect(firstToggleLabel()).toBe(""));
+    });
+
+    /** VISUAL の一括完了で選択範囲の全件が版ずれで落ちたとき、件数だけでは再読み込みの導線が伝わらない */
+    it("VISUAL の一括完了は、reject を件数だけに埋めずステータス行へ出す", async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        completeTaskMock.mockRejectedValue(new Error("Failed to find Server Action."));
+        renderShell();
+
+        fireEvent.click(screen.getByText("最初のタスク"));
+        fireEvent.click(screen.getByRole("button", { name: "V ビジュアル" }));
+        fireEvent.keyDown(document, { key: "x" });
+
+        // StatusLine は errorMessage を infoMessage (「1件中0件を完了」) より優先して出す
+        await waitFor(() => expect(screen.getByText("新しいバージョンが公開されています。ページを再読み込みしてください")).toBeTruthy());
+        consoleError.mockRestore();
+    });
+
+    it("VISUAL の一括完了が `ok: false` で落ちたときは、従来どおり件数だけを出す", async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        completeTaskMock.mockResolvedValue({ ok: false, code: "TASK_BLOCKED", message: "task is blocked" });
+        renderShell();
+
+        fireEvent.click(screen.getByText("最初のタスク"));
+        fireEvent.click(screen.getByRole("button", { name: "V ビジュアル" }));
+        fireEvent.keyDown(document, { key: "x" });
+
+        await waitFor(() => expect(screen.getByText("1件中0件を完了")).toBeTruthy());
+        consoleError.mockRestore();
     });
 });
 

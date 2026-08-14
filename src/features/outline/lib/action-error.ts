@@ -1,3 +1,4 @@
+import { type ActionFailure, isActionRejection } from "@/features/task/lib/action-rejection";
 import type { ActionResult, TaskErrorCode } from "@/features/task/lib/action-result";
 
 /**
@@ -20,3 +21,11 @@ export const formatTaskError = (code: TaskErrorCode, message: string): string =>
 
 /** Server Action の失敗結果 (`ActionResult` の `ok: false`) をそのまま表示文言にする */
 export const formatActionError = (result: Extract<ActionResult, { ok: false }>): string => formatTaskError(result.code, result.message);
+
+/**
+ * 失敗した `ActionOutcome` をステータス行の文言にする (docs/frontend-design.md §8.4)
+ *
+ * reject 由来の失敗 (`ActionRejection`) は `TaskErrorCode` を持たないため、記号名のプレフィックスは付けず、
+ * `action-rejection.ts` が組み立てた日本語文言をそのまま出す
+ */
+export const formatOutcomeError = (failure: ActionFailure): string => (isActionRejection(failure) ? failure.message : formatActionError(failure));

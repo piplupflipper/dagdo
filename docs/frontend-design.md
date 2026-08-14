@@ -152,6 +152,7 @@ dagdo は単一アプリ・単一リポジトリであり、npm workspaces に�
 
 各 feature の内部は `components/` / `hooks/` / `lib/` / `actions/` に分ける。
 `lib/` には DOM にも React にも依存しない純関数だけを置き、単体テスト（第 11 章）はここを主な対象とする。
+例外は `task/lib/run-server-action.ts` だけであり、版ずれ判別の公式述語を `next/navigation` から取るために import する（第 8.4 節）。
 `components/` と `hooks/` は React に依存する層であり、判断のロジックは `lib/` へ切り出して薄く保つ。
 
 feature 間の import は一方向に保つ。
@@ -166,6 +167,8 @@ src/
     layout.tsx                      # 全体レイアウト。夜空背景の設置と globals.css の読み込み
     globals.css                     # Tailwind v4 @theme トークン定義（第 10 章）
     page.tsx                        # メイン画面 (RSC)。getOutlineData → OutlineShell
+    error.tsx                       # ページ配下のエラー境界 (第 8.4 節)
+    global-error.tsx                # ルートレイアウトごと差し替わるエラー境界 (第 8.4 節)
     login/
       page.tsx                      # ログイン画面 (req.md §30 の /login)
     trash/
@@ -267,8 +270,10 @@ src/
         restore-task.ts
         permanently-delete-task.ts
       lib/
-        define-task-action.ts       # Server Action の定型を集約する高階関数 (第 8.4 節)
+        define-task-action.ts       # Server Action の定型を集約する高階関数 (第 8.5 節)
         action-result.ts            # ActionResult<T> と TaskErrorCode (第 8.3 節)
+        action-rejection.ts         # Server Action の reject を失敗形の値へ変換する純関数 (第 8.4 節)
+        run-server-action.ts        # 版ずれ判別を注入済みの runServerAction (第 8.4 節)
         map-db-error.ts             # SQLSTATE / メッセージ → TaskErrorCode 変換 (第 8.3 節)
         queries.ts                  # RSC が呼ぶ読み取り関数 (第 8.1 節)
         depends-on-tasks.ts         # task_dependencies から依存先タスクの実体を引き直す
@@ -298,7 +303,7 @@ src/
 ```
 
 Server Actions は entity 単位（`task` feature）に集約し、UI 側の `outline` / `task-detail` / `dag` / `search` / `trash` 各 feature はこれを import して利用する。
-理由は、11 個の Action が全て `tasks` / `task_dependencies` の 2 テーブルのみを操作し、エラー変換（`map-db-error.ts`）と定型処理（`define-task-action.ts`、第 8.4 節）を共通化する必要があるためである。
+理由は、11 個の Action が全て `tasks` / `task_dependencies` の 2 テーブルのみを操作し、エラー変換（`map-db-error.ts`）と定型処理（`define-task-action.ts`、第 8.5 節）を共通化する必要があるためである。
 一方で `moveTask` / `reorderTasks` は構造操作であり `outline` feature（dnd-kit・`</>`/`J`/`K` の起点）から直接呼ばれるが、実装自体は `task/actions/` に置き、呼び出し元を分けても実装を分けない。
 
 Supabase client は `req.md` §36 が定める 2 種分離をそのままディレクトリへ反映する。
@@ -483,7 +488,7 @@ Op に ID 配列を持たせないのは、undo 履歴へ積む逆操作を「�
 1. 実行前のタスク一覧（`optimisticTasks`）を `tasksSnapshot` として固定する
 2. `invertOutlineOp(op, tasksSnapshot)`（`features/outline/lib/invert-op.ts`）で逆操作の Op 列を組み立てる。組み立てられない場合（`create` / `restore`、対象行が手元に無い場合）は楽観適用も Server Action も行わずに終える
 3. `applyOptimisticAction(op)` で楽観適用する
-4. `callServerForOp(op, tasksSnapshot)`（`features/outline/lib/dispatch-op.ts`）で対応する Server Action を呼ぶ
+4. `callServerForOp(op, tasksSnapshot)`（`features/outline/lib/dispatch-op.ts`）で対応する Server Action を呼ぶ。await は `runServerAction`（`features/task/lib/run-server-action.ts`）で包み、reject も失敗を表す値として受け取る（第 8.4 節）
 5. 失敗ならステータス行（`StatusLine`）へエラー文言を出す。成功なら `{ label, undoOps: 逆操作の Op 列, redoOps: [op] }` を undo 履歴へ積む
 
 `invertOutlineOp` は Op と実行前のスナップショットだけを受け取る純関数であり、「いつ積むか」（Server Action の成功時のみ）の判断は `runOp` に残す。
@@ -1051,7 +1056,82 @@ SQLSTATE `ET001`〜`ET007` は migration が定める契約であり（`supabase
 `ActionResult` は失敗時に `code` と `message` しか持たない。
 `TASK_BLOCKED` の原因タスクは載らないため、必要な側（`blocking-cause.ts`）が手元の依存関係から求める（第 5.2 節）。
 
-### 8.4 Server Action の定型
+### 8.4 Server Action の reject とエラー境界
+
+第 8.3 節の `ActionResult` は「リクエストがサーバーへ届き、DB が弾いた」失敗だけを表す。
+Server Action の Promise そのものが reject する場合はこの契約の外側にあり、`ActionResult` の値は返らない。
+reject の原因は、デプロイによる Server Action ID の版ずれ、サーバー側の未捕捉例外、ネットワーク断である。
+
+書き換え操作の await は `startTransition` の中にあるため（第 5.2 節）、reject をそのままにすると例外が transition の外へ抜け、最寄りの error boundary へ届く。
+1 操作の失敗で画面全体がエラー表示へ切り替わっていたのはこのためである(Issue #66)。
+`startTransition` の中の未処理の例外が最寄りの error boundary へ上がることは Next.js 同梱ドキュメント（`node_modules/next/dist/docs/01-app/01-getting-started/10-error-handling.md`）が明示している。
+
+transition の外（`TrashRow` / `DependencySection` のイベントハンドラ）でも reject の素通しは害になる。
+React のエラー境界はイベントハンドラの例外を捕まえないため画面は保たれるが、進行中フラグ（`isRestoring` / `isAddingDependency` など）を戻す行を飛び越えるため、「復元中…」の disabled 表示のまま操作できなくなる。
+
+`features/task/lib/run-server-action.ts` の `runServerAction` で await を包み、reject を失敗を表す値へ変換する。
+型は `features/task/lib/action-rejection.ts` が持つ。
+
+```typescript
+type ActionRejection = { ok: false; rejected: true; message: string };
+type ActionOutcome<T = void> = ActionResult<T> | ActionRejection;
+```
+
+`ActionRejection` は `code` を持たない。
+`TaskErrorCode` は migration が定める SQLSTATE `ET001`〜`ET007` と 1 対 1 に対応する契約であり（第 8.3 節）、そこへサーバーへ届かなかった失敗を足すとこの対応が崩れるためである。
+
+置き場所を `outline` ではなく `task` feature にしているのは、アウトライン（`use-outline-mutations.ts`）・ゴミ箱（`TrashRow`）・詳細ペイン（`DependencySection`）の 3 つがこの失敗形を要り、feature 間の import を一方向に保つ必要があるためである（第 4 章）。
+Server Action を await する箇所は全部で 9 箇所あり、すべて `runServerAction` を通る。
+
+- `use-outline-mutations.ts` の 5 箇所（`runOp` / `completeSelection` / `createSibling` の作成とタイトル確定 / `runOpsForHistory`）
+- `TrashRow` の 2 箇所（復元・完全削除）
+- `DependencySection` の 2 箇所（依存先の追加・削除）
+
+変換後は例外が transition の外へ出ないため、settle は `ok: false` のときと同じ経路を通る。
+`useOptimistic` のオーバーレイの巻き戻し（第 8.2 節 5b）も、`createSibling` の後始末（`tempId` 集合からの除去と保留タイトルの破棄、第 5.2 節）も、失敗の種類によらず同じ分岐で行われる。
+
+表示文言は reject の理由を 2 つに分けて組み立てる。
+
+| 判別 | 表示文言 |
+|---|---|
+| 版ずれ | 新しいバージョンが公開されています。ページを再読み込みしてください |
+| それ以外 | サーバーとの通信に失敗しました。再試行しても直らない場合は、ページを再読み込みしてください |
+
+「それ以外」の側で再試行だけを促さないのは、セッション失効を切り分けられないためである。
+reject の理由は本番では伏せられ、失効していた場合は再試行し続けても成功しない。
+再読み込みすれば `app/page.tsx` の redirect が `/login` へ送るため、その導線も併せて示す。
+
+版ずれの判別は 2 つの材料を併用する。
+1 つは `next/navigation` が export する `unstable_isUnrecognizedActionError` であり、`run-server-action.ts` が `toActionRejection` の注入口へ渡す。
+もう 1 つは message が `Failed to find Server Action` / `failed-to-find-server-action` を含むことである。
+併用するのは、Next.js 16.3.0 がこの状況で経路ごとに異なる Error を投げるためである。
+fetch action ではサーバーが 404 と `x-nextjs-action-not-found: 1` を返し、クライアントのルーターが `UnrecognizedActionError` を投げる（`node_modules/next/dist/server/app-render/action-handler.js` の `handleUnrecognizedFetchAction`、`node_modules/next/dist/client/components/router-reducer/reducers/server-action-reducer.js`）。
+MPA action ではサーバー側が `Failed to find Server Action. This request might be from an older or newer deployment.` を投げる（同 `action-handler.js`）。
+公式の述語が判別するのは前者だけであり、後者は素の `Error` のため message を見るしかない。
+逆に message だけに頼ると、Next.js が文言を変えたときに静かに判別できなくなる。
+
+判別を注入の形にしているのは、`action-rejection.ts` をフレームワークに依存しない純関数のまま保つためである（第 4 章）。
+`run-server-action.ts` は `lib/` にありながら `next/navigation` を import する唯一の例外であり、呼び出し側が注入を毎回書かずに済むよう注入済みのものを提供する役目に絞る。
+
+どちらの文言も `TaskErrorCode` の記号名を前置しない（`formatOutcomeError`、`features/outline/lib/action-error.ts`）。
+記号名は SQLSTATE を引くための手掛かりであり、対応する SQLSTATE を持たない失敗に付けると `req.md` §66 の表と突き合わせられない文字列になるためである。
+
+表示先は各画面の既存の仕組みに合わせる。
+アウトラインはステータス行、`TrashRow` は行内の `error`、`DependencySection` は節内の `dependencyError` である。
+後の 2 つは `TaskErrorCode` を前提とした文言の組み立て（`formatDependencyError`）を通せないため、reject 由来の日本語文言をそのまま同じ場所へ出す。
+
+VISUAL の一括完了（`completeSelection`）だけは、個々の失敗を「N件中M件を完了」という件数で伝える（第 5.2 節）。
+ただし reject 由来の失敗が 1 件でもあれば、件数に加えてその文言をステータス行へも出す。
+版ずれやセッション失効は選択範囲の全件を落とすため、件数だけでは次に何をすればよいか（再読み込み）が伝わらないためである。
+`StatusLine` は `errorMessage` を `infoMessage` より優先して表示する（第 8.2 節）。
+
+エラー境界そのものも `app/error.tsx` と `app/global-error.tsx` に置く。
+これが無いと、上記以外の描画時の失敗が Next.js 組み込みの全画面エラーページ（英語の「This page couldn't load / A server error occurred.」）に落ちる。
+`error.tsx` は同じ段の `layout.tsx` を包まないため、`layout.tsx` 自身の失敗は `global-error.tsx` が受ける。
+再試行の導線は `error.tsx` が `retry`（Next.js 16.3.0 で stable、`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/error.md`）、`global-error.tsx` はページの再読み込みである。
+`global-error.tsx` には `globals.css` が届かず Tailwind のクラスもセマンティックトークン（第 10 章）も効かないため、そこだけスタイルを inline で書き、色はパレット層の値を写している。
+
+### 8.5 Server Action の定型
 
 `req.md` §71 が Server Action の責務として挙げるのは、session 確認・DB/RPC 呼び出し・DB エラー変換・revalidation である。
 このうち DB/RPC 呼び出し以外は 11 本すべてで同じ形になるため、高階関数 `defineTaskAction`（`task/lib/define-task-action.ts`）へ集約する。
@@ -1183,7 +1263,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 実行は `make fe-test`（`npm test` = `vitest run`）であり、品質ゲート `make check` の 3 段目に入る（第 3.6 節）。
 
 テストは対象と同じディレクトリに置く。
-主な対象は `lib/` 配下の純関数であり、次の 25 ファイル・304 件がある。
+主な対象は `lib/` 配下の純関数であり、次の 27 ファイル・339 件がある。
 
 | 対象 | テストファイル |
 |---|---|
@@ -1207,10 +1287,12 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | 依存操作のエラー文言 | `task-detail/lib/dependency-error.test.ts` |
 | 依存先タスクの実体の引き直し | `task/lib/depends-on-tasks.test.ts` |
 | SQLSTATE / メッセージ → `TaskErrorCode` 変換 | `task/lib/map-db-error.test.ts` |
+| reject の失敗形への変換と版ずれ判別（第 8.4 節） | `task/lib/action-rejection.test.ts` |
+| reject を値へ落とす窓口と公式述語の注入（第 8.4 節） | `task/lib/run-server-action.test.ts` |
 | 同一論理行の付け替え判定 | `task/lib/temp-id-renames.test.ts` |
 | Asia/Tokyo 基準の日付整形と期限切れ判定 | `lib/date/timezone.test.ts` |
 | 行内タイトル編集のフォーカス遷移 | `outline/components/inline-title-editor.test.tsx` |
-| キー操作から Server Action までの結線、カーソル行とフォーカスの追従（第 6.6 節） | `outline/components/outline-shell.test.tsx` |
+| キー操作から Server Action までの結線、カーソル行とフォーカスの追従（第 6.6 節）、reject の受け止め（第 8.4 節） | `outline/components/outline-shell.test.tsx` |
 | 詳細ペインの編集状態の初期化 | `task-detail/components/detail-pane.test.tsx` |
 
 `components` 配下の 3 ファイルだけ `@testing-library/react` で描画して確かめる。
