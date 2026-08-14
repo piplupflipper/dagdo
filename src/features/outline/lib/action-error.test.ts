@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatActionError, formatOutcomeError, formatTaskError } from "@/features/outline/lib/action-error";
-import { toActionRejection } from "@/features/outline/lib/action-rejection";
+import { toActionRejection } from "@/features/task/lib/action-rejection";
 import type { TaskErrorCode } from "@/features/task/lib/action-result";
 
 const ALL_CODES: readonly TaskErrorCode[] = ["TASK_NOT_FOUND", "TASK_PARENT_CYCLE", "TASK_DEPENDENCY_CYCLE", "TASK_BLOCKED", "DEPENDENCY_ALREADY_EXISTS", "INVALID_POSITION", "INVALID_PARENT"];
@@ -52,6 +52,6 @@ describe("formatOutcomeError", () => {
     });
 
     it("版ずれ以外の reject も記号名なしの日本語文言で出す", () => {
-        expect(formatOutcomeError(toActionRejection(new TypeError("Failed to fetch")))).toBe("サーバーとの通信に失敗しました。しばらくしてから再試行してください");
+        expect(formatOutcomeError(toActionRejection(new TypeError("Failed to fetch")))).toBe("サーバーとの通信に失敗しました。再試行しても直らない場合は、ページを再読み込みしてください");
     });
 });

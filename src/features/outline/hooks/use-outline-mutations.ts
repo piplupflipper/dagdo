@@ -1,6 +1,5 @@
 import { type Dispatch, type SetStateAction, useRef, useState, useTransition } from "react";
 import { formatActionError, formatOutcomeError, formatTaskError } from "@/features/outline/lib/action-error";
-import { isActionRejection, runServerAction } from "@/features/outline/lib/action-rejection";
 import { findBlockingCause } from "@/features/outline/lib/blocking-cause";
 import { callServerForOp } from "@/features/outline/lib/dispatch-op";
 import {
@@ -20,7 +19,9 @@ import { EMPTY_UNDO_HISTORY, popRedoEntry, popUndoEntry, pushToRedo, pushToUndo,
 import { completeTask } from "@/features/task/actions/complete-task";
 import { createTask } from "@/features/task/actions/create-task";
 import { updateTask } from "@/features/task/actions/update-task";
+import { isActionRejection } from "@/features/task/lib/action-rejection";
 import type { ActionResult } from "@/features/task/lib/action-result";
+import { runServerAction } from "@/features/task/lib/run-server-action";
 import { useOutlineStore } from "@/store/outline-store";
 import type { AppTask, TaskDependency } from "@/types/task";
 
@@ -130,7 +131,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
      * `undefined` を返せば既定の `formatActionError` に委ねる。文言の差し替え以外の副作用 (原因タスクの点滅など) も
      * この中で行う。使うのは `runComplete` の `TASK_BLOCKED` 分岐だけである。
      *
-     * Server Action の await は `runServerAction` (lib/action-rejection.ts) を通す。
+     * Server Action の await は `runServerAction` (task/lib/run-server-action.ts) を通す。
      * 素の await では Promise の reject が transition の外へ抜けて error boundary へ届き、1 操作の失敗で
      * 画面全体がエラー表示へ切り替わってしまう (Issue #66、docs/frontend-design.md §8.4)
      */
@@ -194,7 +195,14 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         runComplete(cursorTask.id);
     };
 
-    /** VISUAL の `x`。選択範囲の一括完了は、成功した taskId 群を 1 エントリにまとめて undo 履歴へ積む */
+    /**
+     * VISUAL の `x`。選択範囲の一括完了は、成功した taskId 群を 1 エントリにまとめて undo 履歴へ積む
+     *
+     * 個々の失敗は「N件中M件を完了」という件数で伝えるのが基本だが、reject 由来の失敗だけはステータス行へも出す。
+     * 版ずれやセッション失効は選択範囲の全件を落とすため、件数だけでは利用者が次に何をすればよいか
+     * (再読み込み) を知る手掛かりが無いためである (docs/frontend-design.md §8.4)。
+     * `StatusLine` は `errorMessage` を `infoMessage` より優先して出す
+     */
     const completeSelection = (): void => {
         const taskIds = Array.from(visualSelectedTaskIds).filter((taskId) => !isPendingTaskId(taskId));
         if (taskIds.length === 0) {
@@ -203,16 +211,24 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         }
         startTransition(async () => {
             const succeededTaskIds: string[] = [];
+            /** 最初に出た reject の文言。同じ原因が全件に繰り返し出るため、上書きせず 1 つ目を残す */
+            let rejectionMessage: string | null = null;
             for (const taskId of taskIds) {
                 applyOptimisticAction({ type: "complete", taskId });
                 const result = await runServerAction(() => completeTask({ taskId }));
                 if (result.ok) {
                     succeededTaskIds.push(taskId);
+                    continue;
+                }
+                if (isActionRejection(result)) {
+                    rejectionMessage ??= result.message;
+                    console.error(`[outline] completeTask rejected for ${taskId}: ${result.message}`);
                 } else {
-                    // 失敗は件数 (下の `statusMessage`) で伝える。reject 由来でもそこは変えず、切り分け用に理由だけログへ残す
-                    console.error(`[outline] completeTask failed for ${taskId}: ${isActionRejection(result) ? `rejected — ${result.message}` : `${result.code} ${result.message}`}`);
+                    // DB エラー契約の失敗は件数 (下の `statusMessage`) で伝え、切り分け用に code と message をログへ残す
+                    console.error(`[outline] completeTask failed for ${taskId}: ${result.code} ${result.message}`);
                 }
             }
+            setStatusError(rejectionMessage);
             setStatusMessage(`${taskIds.length}件中${succeededTaskIds.length}件を完了`);
             if (succeededTaskIds.length > 0) {
                 pushHistory(

@@ -1,7 +1,9 @@
 import { type JSX, type KeyboardEvent, useState } from "react";
 import { addDependency } from "@/features/task/actions/add-dependency";
 import { removeDependency } from "@/features/task/actions/remove-dependency";
+import { type ActionFailure, isActionRejection } from "@/features/task/lib/action-rejection";
 import { dependsOnTasksOf } from "@/features/task/lib/depends-on-tasks";
+import { runServerAction } from "@/features/task/lib/run-server-action";
 import { formatDependencyError } from "@/features/task-detail/lib/dependency-error";
 import type { AppTask, TaskDependency } from "@/types/task";
 
@@ -27,7 +29,11 @@ type DependencySectionProps = {
  *
  * 依存関係は Op リデューサの対象外であり、追加・削除の 2 操作は直接 Server Action を呼んで結果を待つ
  * (タイトル・説明・期日のような楽観適用は行わない)。
- * 依存先が 0 件でも追加 UI を出す必要があるため、一覧の有無に関わらず節自体は常に描画する
+ * 依存先が 0 件でも追加 UI を出す必要があるため、一覧の有無に関わらず節自体は常に描画する。
+ *
+ * 2 つの Server Action はいずれも `runServerAction` (task/lib/run-server-action.ts) を通す。
+ * 素の await では reject が進行中フラグ (`removingDependencyId` / `isAddingDependency`) を戻す行を飛び越え、
+ * 「追加中…」の disabled 表示のまま二度と操作できなくなる (Issue #66、docs/frontend-design.md §8.4)
  */
 export const DependencySection = ({ task, allTasks, dependencies, resetToken, onEscapeToOutline }: DependencySectionProps): JSX.Element => {
     const [dependencyError, setDependencyError] = useState<string | null>(null);
@@ -54,13 +60,21 @@ export const DependencySection = ({ task, allTasks, dependencies, resetToken, on
     const dependsOnTaskIds = new Set(dependsOnTasks.map((dependsOnTask) => dependsOnTask.id));
     const dependencyCandidates = allTasks.filter((candidate) => candidate.id !== task.id && !dependsOnTaskIds.has(candidate.id));
 
+    /**
+     * 失敗の表示文言を組み立てる
+     *
+     * reject 由来の失敗は `TaskErrorCode` を持たないため `formatDependencyError` を通せない。
+     * 文言はすでに利用者向けの日本語であり、そのまま同じ場所へ出す (docs/frontend-design.md §8.4)
+     */
+    const dependencyErrorMessage = (failure: ActionFailure): string => (isActionRejection(failure) ? failure.message : formatDependencyError(failure.code));
+
     const handleRemoveDependency = async (dependsOnTaskId: string): Promise<void> => {
         setRemovingDependencyId(dependsOnTaskId);
         setDependencyError(null);
-        const result = await removeDependency({ taskId: task.id, dependsOnTaskId });
+        const result = await runServerAction(() => removeDependency({ taskId: task.id, dependsOnTaskId }));
         setRemovingDependencyId(null);
         if (!result.ok) {
-            setDependencyError(formatDependencyError(result.code));
+            setDependencyError(dependencyErrorMessage(result));
         }
     };
 
@@ -70,13 +84,13 @@ export const DependencySection = ({ task, allTasks, dependencies, resetToken, on
         }
         setIsAddingDependency(true);
         setDependencyError(null);
-        const result = await addDependency({ taskId: task.id, dependsOnTaskId: selectedDependsOnTaskId });
+        const result = await runServerAction(() => addDependency({ taskId: task.id, dependsOnTaskId: selectedDependsOnTaskId }));
         setIsAddingDependency(false);
         if (result.ok) {
             setSelectedDependsOnTaskId("");
             return;
         }
-        setDependencyError(formatDependencyError(result.code));
+        setDependencyError(dependencyErrorMessage(result));
     };
 
     /**

@@ -1,4 +1,4 @@
-import { type ActionFailure, isActionRejection } from "@/features/outline/lib/action-rejection";
+import { type ActionFailure, isActionRejection } from "@/features/task/lib/action-rejection";
 import type { ActionResult, TaskErrorCode } from "@/features/task/lib/action-result";
 
 /**

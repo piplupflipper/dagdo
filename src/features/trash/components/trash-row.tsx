@@ -1,6 +1,7 @@
 import { type JSX, useState } from "react";
 import { permanentlyDeleteTask } from "@/features/task/actions/permanently-delete-task";
 import { restoreTask } from "@/features/task/actions/restore-task";
+import { runServerAction } from "@/features/task/lib/run-server-action";
 import { formatDateTime } from "@/lib/date/timezone";
 import type { TrashTask } from "@/types/task";
 
@@ -13,7 +14,14 @@ type TrashRowProps = {
  *
  * タイトル・削除日時・復元/完全削除ボタンを表示する。
  * 完全削除は不可逆のため window.confirm で確認してから permanentlyDeleteTask を呼ぶ。
- * 成功時は revalidatePath (各 Server Action 内) により親の RSC から流れ直す props で一覧が更新される
+ * 成功時は revalidatePath (各 Server Action 内) により親の RSC から流れ直す props で一覧が更新される。
+ *
+ * 2 つの Server Action はいずれも `runServerAction` (task/lib/run-server-action.ts) を通す。
+ * 素の await では reject が進行中フラグを戻す行を飛び越え、「復元中…」の disabled 表示のまま
+ * 二度と操作できなくなる (Issue #66、docs/frontend-design.md §8.4)。
+ * 失敗の表示はこの行が元から持つ `error` に合流させる。`ActionResult` の `message` は英語のログ用文言
+ * (docs/frontend-design.md §8.3) だが、reject 由来の `message` は利用者向けの日本語文言であり、
+ * どちらも同じ場所へ出す既存の作りに合わせる
  */
 export const TrashRow = ({ task }: TrashRowProps): JSX.Element => {
     const [isRestoring, setIsRestoring] = useState(false);
@@ -25,7 +33,7 @@ export const TrashRow = ({ task }: TrashRowProps): JSX.Element => {
     const handleRestore = async (): Promise<void> => {
         setIsRestoring(true);
         setError(null);
-        const result = await restoreTask({ taskId: task.id });
+        const result = await runServerAction(() => restoreTask({ taskId: task.id }));
         setIsRestoring(false);
         if (!result.ok) {
             setError(result.message);
@@ -38,7 +46,7 @@ export const TrashRow = ({ task }: TrashRowProps): JSX.Element => {
         }
         setIsDeleting(true);
         setError(null);
-        const result = await permanentlyDeleteTask({ taskId: task.id });
+        const result = await runServerAction(() => permanentlyDeleteTask({ taskId: task.id }));
         setIsDeleting(false);
         if (!result.ok) {
             setError(result.message);

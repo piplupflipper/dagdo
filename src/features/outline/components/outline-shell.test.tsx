@@ -15,6 +15,8 @@ import type { AppTask } from "@/types/task";
 
 const callServerForOpMock = vi.fn();
 const createTaskMock = vi.fn();
+/** VISUAL の一括完了 (`completeSelection`) だけは `callServerForOp` を通らず、この Action を直接呼ぶ */
+const completeTaskMock = vi.fn();
 
 vi.mock("@/features/outline/lib/dispatch-op", () => ({
     callServerForOp: (...args: unknown[]) => callServerForOpMock(...args),
@@ -22,7 +24,9 @@ vi.mock("@/features/outline/lib/dispatch-op", () => ({
 vi.mock("@/features/task/actions/create-task", () => ({
     createTask: (input: unknown) => createTaskMock(input),
 }));
-vi.mock("@/features/task/actions/complete-task", () => ({ completeTask: vi.fn() }));
+vi.mock("@/features/task/actions/complete-task", () => ({
+    completeTask: (input: unknown) => completeTaskMock(input),
+}));
 vi.mock("@/features/task/actions/update-task", () => ({ updateTask: vi.fn() }));
 // 詳細ペインの依存追加・削除と、StatusLine のログアウト。いずれも Server Action であり、
 // 素の import は認証まわりのサーバー専用モジュールまで辿ってしまうため差し替える
@@ -74,6 +78,7 @@ const renderShell = (): void => {
 beforeEach(() => {
     callServerForOpMock.mockResolvedValue({ ok: true, data: undefined });
     createTaskMock.mockResolvedValue({ ok: true, data: { id: "real-1" } });
+    completeTaskMock.mockResolvedValue({ ok: true, data: undefined });
     useOutlineStore.setState({
         mode: "NORMAL",
         cursorTaskId: null,
@@ -268,6 +273,34 @@ describe("Server Action の reject", () => {
 
         await waitFor(() => expect(screen.getByText("TASK_NOT_FOUND — task not found")).toBeTruthy());
         await waitFor(() => expect(firstToggleLabel()).toBe(""));
+    });
+
+    /** VISUAL の一括完了で選択範囲の全件が版ずれで落ちたとき、件数だけでは再読み込みの導線が伝わらない */
+    it("VISUAL の一括完了は、reject を件数だけに埋めずステータス行へ出す", async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        completeTaskMock.mockRejectedValue(new Error("Failed to find Server Action."));
+        renderShell();
+
+        fireEvent.click(screen.getByText("最初のタスク"));
+        fireEvent.click(screen.getByRole("button", { name: "V ビジュアル" }));
+        fireEvent.keyDown(document, { key: "x" });
+
+        // StatusLine は errorMessage を infoMessage (「1件中0件を完了」) より優先して出す
+        await waitFor(() => expect(screen.getByText("新しいバージョンが公開されています。ページを再読み込みしてください")).toBeTruthy());
+        consoleError.mockRestore();
+    });
+
+    it("VISUAL の一括完了が `ok: false` で落ちたときは、従来どおり件数だけを出す", async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        completeTaskMock.mockResolvedValue({ ok: false, code: "TASK_BLOCKED", message: "task is blocked" });
+        renderShell();
+
+        fireEvent.click(screen.getByText("最初のタスク"));
+        fireEvent.click(screen.getByRole("button", { name: "V ビジュアル" }));
+        fireEvent.keyDown(document, { key: "x" });
+
+        await waitFor(() => expect(screen.getByText("1件中0件を完了")).toBeTruthy());
+        consoleError.mockRestore();
     });
 });
 
