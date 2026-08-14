@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { formatActionError, formatTaskError } from "@/features/outline/lib/action-error";
+import { formatActionError, formatOutcomeError, formatTaskError } from "@/features/outline/lib/action-error";
+import { toActionRejection } from "@/features/outline/lib/action-rejection";
 import type { TaskErrorCode } from "@/features/task/lib/action-result";
 
 const ALL_CODES: readonly TaskErrorCode[] = ["TASK_NOT_FOUND", "TASK_PARENT_CYCLE", "TASK_DEPENDENCY_CYCLE", "TASK_BLOCKED", "DEPENDENCY_ALREADY_EXISTS", "INVALID_POSITION", "INVALID_PARENT"];
@@ -34,5 +35,23 @@ describe("formatActionError", () => {
 
     it("message が空でも記号名とダッシュは残る", () => {
         expect(formatActionError({ ok: false, code: "TASK_NOT_FOUND", message: "" })).toBe("TASK_NOT_FOUND — ");
+    });
+});
+
+describe("formatOutcomeError", () => {
+    it("DB エラー契約の失敗は formatActionError と同じ形にする", () => {
+        expect(formatOutcomeError({ ok: false, code: "INVALID_POSITION", message: "position out of range" })).toBe("INVALID_POSITION — position out of range");
+    });
+
+    it("reject 由来の失敗は TaskErrorCode の記号名を前置しない", () => {
+        const rejection = toActionRejection(new Error("Failed to find Server Action."));
+        expect(formatOutcomeError(rejection)).toBe("新しいバージョンが公開されています。ページを再読み込みしてください");
+        for (const code of ALL_CODES) {
+            expect(formatOutcomeError(rejection).startsWith(code)).toBe(false);
+        }
+    });
+
+    it("版ずれ以外の reject も記号名なしの日本語文言で出す", () => {
+        expect(formatOutcomeError(toActionRejection(new TypeError("Failed to fetch")))).toBe("サーバーとの通信に失敗しました。しばらくしてから再試行してください");
     });
 });

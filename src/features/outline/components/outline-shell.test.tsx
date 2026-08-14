@@ -236,6 +236,42 @@ describe("行の操作", () => {
 });
 
 /**
+ * Server Action の reject (Issue #66)
+ *
+ * 修正前は `startTransition` の中の素の await が reject を素通しし、例外が error boundary まで抜けて
+ * 画面全体がエラー表示へ切り替わっていた。ここでは 1 操作の失敗として扱われること、
+ * すなわち例外が外へ出ずステータス行へ文言が出ること、楽観適用が `ok: false` のときと同じく巻き戻ることを見る。
+ * 巻き戻りは `useOptimistic` が transition の終了で行うものであり、失敗時に明示的な逆適用は行っていない
+ */
+describe("Server Action の reject", () => {
+    /** カーソル行のチェックボックス。完了の楽観適用が残っていれば `✓`、巻き戻っていれば空になる */
+    const firstToggleLabel = (): string => screen.getAllByRole("button", { name: "完了を切替" })[0]?.textContent ?? "";
+
+    it("版ずれの reject はステータス行へ再読み込みを促す文言を出し、楽観適用は巻き戻る", async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        callServerForOpMock.mockRejectedValue(new Error("Failed to find Server Action. This request might be from an older or newer deployment."));
+        renderShell();
+
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+
+        await waitFor(() => expect(screen.getByText("新しいバージョンが公開されています。ページを再読み込みしてください")).toBeTruthy());
+        // 巻き戻しは transition の終了に伴って起きるため、文言の表示と同じレンダーとは限らない
+        await waitFor(() => expect(firstToggleLabel()).toBe(""));
+        consoleError.mockRestore();
+    });
+
+    it("`ok: false` の失敗も同じく文言を出して巻き戻る (reject との差は文言だけ)", async () => {
+        callServerForOpMock.mockResolvedValue({ ok: false, code: "TASK_NOT_FOUND", message: "task not found" });
+        renderShell();
+
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+
+        await waitFor(() => expect(screen.getByText("TASK_NOT_FOUND — task not found")).toBeTruthy());
+        await waitFor(() => expect(firstToggleLabel()).toBe(""));
+    });
+});
+
+/**
  * カーソルと DOM のフォーカスのずれ (Issue #58)
  *
  * `Enter` → `Esc` の往復でフォーカスは行の要素に残る。その状態で `j` を押しても

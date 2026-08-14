@@ -1,5 +1,6 @@
 import { type Dispatch, type SetStateAction, useRef, useState, useTransition } from "react";
-import { formatActionError, formatTaskError } from "@/features/outline/lib/action-error";
+import { formatActionError, formatOutcomeError, formatTaskError } from "@/features/outline/lib/action-error";
+import { isActionRejection, runServerAction } from "@/features/outline/lib/action-rejection";
 import { findBlockingCause } from "@/features/outline/lib/blocking-cause";
 import { callServerForOp } from "@/features/outline/lib/dispatch-op";
 import {
@@ -127,7 +128,11 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
      *
      * `onError` は骨格から外れるエラー処理の逃がし口である。ステータス行へ出す文言を返せばそれを使い、
      * `undefined` を返せば既定の `formatActionError` に委ねる。文言の差し替え以外の副作用 (原因タスクの点滅など) も
-     * この中で行う。使うのは `runComplete` の `TASK_BLOCKED` 分岐だけである
+     * この中で行う。使うのは `runComplete` の `TASK_BLOCKED` 分岐だけである。
+     *
+     * Server Action の await は `runServerAction` (lib/action-rejection.ts) を通す。
+     * 素の await では Promise の reject が transition の外へ抜けて error boundary へ届き、1 操作の失敗で
+     * 画面全体がエラー表示へ切り替わってしまう (Issue #66、docs/frontend-design.md §8.4)
      */
     const runOp = (op: OutlineOp, label: string, onError?: (result: Extract<ActionResult, { ok: false }>) => string | undefined): void => {
         // 逆操作の材料も `reorder` の `orderedTaskIds` の再構成も、楽観適用より前の一覧から取る
@@ -138,9 +143,10 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         }
         startTransition(async () => {
             applyOptimisticAction(op);
-            const result = await callServerForOp(op, tasksSnapshot);
+            const result = await runServerAction(() => callServerForOp(op, tasksSnapshot));
             if (!result.ok) {
-                setStatusError(onError?.(result) ?? formatActionError(result));
+                // reject 由来の失敗は `TaskErrorCode` を持たないため、`onError` (TASK_BLOCKED 用の差し替え口) は通さない
+                setStatusError(isActionRejection(result) ? result.message : (onError?.(result) ?? formatActionError(result)));
                 return;
             }
             setStatusError(null);
@@ -199,11 +205,12 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
             const succeededTaskIds: string[] = [];
             for (const taskId of taskIds) {
                 applyOptimisticAction({ type: "complete", taskId });
-                const result = await completeTask({ taskId });
+                const result = await runServerAction(() => completeTask({ taskId }));
                 if (result.ok) {
                     succeededTaskIds.push(taskId);
                 } else {
-                    console.error(`[outline] completeTask failed for ${taskId}: ${result.code} ${result.message}`);
+                    // 失敗は件数 (下の `statusMessage`) で伝える。reject 由来でもそこは変えず、切り分け用に理由だけログへ残す
+                    console.error(`[outline] completeTask failed for ${taskId}: ${isActionRejection(result) ? `rejected — ${result.message}` : `${result.code} ${result.message}`}`);
                 }
             }
             setStatusMessage(`${taskIds.length}件中${succeededTaskIds.length}件を完了`);
@@ -249,12 +256,12 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         startTransition(async () => {
             applyOptimisticAction({ type: "create", tempId, title, parentId, position });
             setCursor(tempId);
-            const result = await createTask({ title, parentId, position });
+            const result = await runServerAction(() => createTask({ title, parentId, position }));
             pendingTempIdsRef.current.delete(tempId);
             if (!result.ok) {
                 // 保留中のタイトル確定があれば、create 自体の失敗に合わせて破棄する
                 takePendingTitle(pendingCreate, tempId);
-                setStatusError(formatActionError(result));
+                setStatusError(formatOutcomeError(result));
                 return;
             }
             const realId = result.data.id;
@@ -273,9 +280,9 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
             const pendingTitle = takePendingTitle(pendingCreate, tempId);
             if (pendingTitle !== undefined && pendingTitle !== title) {
                 applyOptimisticAction({ type: "updateTitle", taskId: realId, title: pendingTitle });
-                const titleResult = await updateTask({ taskId: realId, title: pendingTitle });
+                const titleResult = await runServerAction(() => updateTask({ taskId: realId, title: pendingTitle }));
                 if (!titleResult.ok) {
-                    setStatusError(formatActionError(titleResult));
+                    setStatusError(formatOutcomeError(titleResult));
                     return;
                 }
                 pushHistory("タイトル変更", [{ type: "updateTitle", taskId: realId, title }], [{ type: "updateTitle", taskId: realId, title: pendingTitle }]);
@@ -426,10 +433,10 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         let allOk = true;
         for (const op of ops) {
             applyOptimisticAction(op);
-            const result = await callServerForOp(op, tasksSnapshot);
+            const result = await runServerAction(() => callServerForOp(op, tasksSnapshot));
             if (!result.ok) {
                 allOk = false;
-                setStatusError(formatActionError(result));
+                setStatusError(formatOutcomeError(result));
             }
         }
         if (allOk) {
