@@ -460,8 +460,9 @@ matcher の除外に `/trash` は含めない。
 2. **DB 層の RLS**: `auth()` から得た `session.user.id` を基に発行した Custom JWT（第 5 章）を用いて Supabase Data API へアクセスし、`user_id = next_auth.uid()` という RLS 条件で行レベルの認可を行う(`req.md` §40〜43)
 
 middleware の cookie 存在チェックをすり抜けた（あるいは middleware 自体が到達しない）リクエストがあったとしても、RSC/Server Action 層の `auth()` がセッションを検証できなければ `session` は `null` となり、Server Action はそこで処理を継続できない。
-さらに万一 `auth()` の検証を経ずに Custom JWT が発行される経路が実装上できてしまったとしても、RLS は `next_auth.uid()` と `user_id` の一致を独立に検証するため、他ユーザーのデータへアクセスすることはできない。
-すなわち middleware は UX 上の最適化（未ログインユーザーを早期に `/login` へ導く）に過ぎず、RLS が認可の最終防衛線であるという位置づけを本設計書の前提とする。
+Custom JWT の発行処理は `sub` を選択して Supabase の JWT secret で署名するため、RLS から独立した防御境界ではない。通常経路では `auth()` から取得した user ID だけを `sub` に渡すことで信頼の連鎖を成立させるが、`auth()` を経ずに任意の user ID で JWT を発行できる経路が生じた場合、RLS はその署名済み `sub` を正当なユーザーとして受け入れる。
+すなわち middleware は UX 上の最適化（未ログインユーザーを早期に `/login` へ導く）に過ぎず、RSC / Server Action のセッション検証から Custom JWT 発行、RLS までを一続きの認可境界として維持することを本設計書の前提とする。
+通常ユーザー間の分離と管理権限からの秘匿の違い、および 2026-08-14 時点の hosted DB の監査結果は `docs/user-data-isolation-audit.md` を参照する。
 
 ---
 
@@ -556,6 +557,7 @@ next_auth.uid() (RLS Policy内で解決)
 - **多要素認証（MFA）を実装しない**。GitHub アカウント側の MFA 設定に依存する
 - **認証イベントの監査ログを持たない**。ログイン履歴やセッション一覧の閲覧・強制ログアウト等の管理機能は設けない
 - **GitHub access token をアプリケーション側で保持・利用しない**(`req.md` §33)。Auth.js Adapter が `next_auth.accounts` に保存する値をそのまま外部 API 呼び出し等へ転用しない
+- **Supabase / Vercel 等のインフラ管理者からデータを秘匿しない**。RLS は通常ユーザー間の認可を目的とし、`service_role`、DB 管理権限、JWT signing secret を持つ主体を防御対象に含めない。管理者からも秘匿する要件にはクライアント側暗号化が必要であり、現状との差分は `docs/user-data-isolation-audit.md` に記録する
 
 ---
 

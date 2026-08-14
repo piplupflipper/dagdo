@@ -10,6 +10,7 @@ dagdo は、アウトライナー形式 + vim ライクなキーボード操作�
 - DB 設計: [docs/db-design.md](./docs/db-design.md)
 - マイグレーション設計: [docs/migration-design.md](./docs/migration-design.md)
 - 本番デプロイ手順: [docs/deploy.md](./docs/deploy.md)
+- ユーザーデータ分離調査: [docs/user-data-isolation-audit.md](./docs/user-data-isolation-audit.md)
 
 ## セットアップ
 
