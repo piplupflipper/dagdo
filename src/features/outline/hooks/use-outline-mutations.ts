@@ -3,6 +3,7 @@ import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { useOpQueue } from "@/features/outline/hooks/use-op-queue";
 import { formatActionError, formatTaskError } from "@/features/outline/lib/action-error";
 import { findBlockingCause } from "@/features/outline/lib/blocking-cause";
+import { findDeletionSuccessor } from "@/features/outline/lib/deletion-successor";
 import {
     computeCreatePosition,
     computeIndent,
@@ -444,7 +445,18 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         if (cursorTaskId === null) {
             return false;
         }
-        return runOp({ type: "softDelete", taskId: cursorTaskId }, "ゴミ箱へ移動");
+        // 削除で行が消えるとストアの clamp (setVisibleTaskIds) がカーソルを先頭行へ寄せてしまい、
+        // 続く `.` が先頭行を削除する事故になる (Issue #76)。vim の dd に合わせ、
+        // 1 つ下 (最終行なら 1 つ上) の後継を削除前に決めておき、apply 成功後にそこへ移す。
+        // visibleTaskIds は selector で購読しない。OutlineShell が毎レンダー新しい配列を setVisibleTaskIds へ
+        // 同期するため、購読すると「同期 → 再レンダー → 同期」の無限ループになる。ここはイベントハンドラ内の
+        // 一度きりの読み取りなので getState() で足りる
+        const successor = findDeletionSuccessor(useOutlineStore.getState().visibleTaskIds, cursorTaskId);
+        if (!runOp({ type: "softDelete", taskId: cursorTaskId }, "ゴミ箱へ移動")) {
+            return false;
+        }
+        setCursor(successor);
+        return true;
     };
 
     /** `dd` */
