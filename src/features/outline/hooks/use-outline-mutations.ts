@@ -17,6 +17,7 @@ import type { InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
 import { invertOutlineOp } from "@/features/outline/lib/invert-op";
 import { applyOutlineOp, type OutlineOp } from "@/features/outline/lib/outline-ops";
 import { dispatchRepeatCommand, type RepeatableCommand } from "@/features/outline/lib/repeat-command";
+import { tasksToMarkdown } from "@/features/outline/lib/tasks-to-markdown";
 import { EMPTY_UNDO_HISTORY, popRedoEntry, popUndoEntry, pushToRedo, pushToUndo, recordEntry, type UndoHistoryState } from "@/features/outline/lib/undo-history";
 import { validateOutlineOp } from "@/features/outline/lib/validate-op";
 import type { TaskErrorCode } from "@/features/task/lib/action-result";
@@ -62,7 +63,7 @@ type UseOutlineMutationsArgs = {
 
 /** データを書き換える操作の一式 (StatusLine へ出す 2 つのメッセージと、Op キューの未同期件数を含む) */
 type OutlineMutations = {
-    /** StatusLine の情報表示。現状は VISUAL の一括完了の件数のみ */
+    /** StatusLine の情報表示。VISUAL の一括完了の件数と Markdown コピー成功 (Issue #80) */
     statusMessage: string | null;
     /** StatusLine のエラー表示。バリデーション失敗・キュー破棄・版ずれ停止で差し替わり、次の成功操作で null へ戻る */
     statusError: string | null;
@@ -76,6 +77,8 @@ type OutlineMutations = {
     completeSelection: () => void;
     /** `o` / `O` とヘッダの `+ 新規タスク` */
     createSibling: (placement: SiblingPlacement) => void;
+    /** ヘッダの Markdown コピー。未削除の全件をクリップボードへ書き、成功時は件数を statusMessage へ出す (Issue #80) */
+    copyTasksAsMarkdown: () => void;
     /** 行内タイトル編集と DetailPane のタイトル編集に共通の確定処理 */
     commitInlineTitleEdit: (taskId: string, title: string) => void;
     /** DetailPane の説明編集の確定 */
@@ -328,6 +331,35 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
             );
         }
         exitVisual();
+    };
+
+    /**
+     * 未削除の全タスクを Markdown 箇条書きとしてクリップボードへコピーする (Issue #80)
+     *
+     * 変換は `tasksToMarkdown` (折りたたみ・検索は見ない)。成功時は `statusMessage` へ件数を出し、
+     * 既存のエラー表示が info を隠さないよう `clearStatusError` も呼ぶ (VISUAL 一括完了は setStatusMessage のみで、
+     * errorMessage が残っていると件数が見えない。コピーは成功通知が仕様の本体なので消す)。
+     * 失敗は TaskErrorCode を持たないため記号名は付けず、日本語の UI 文言を statusError へ出す
+     */
+    const copyTasksAsMarkdown = (): void => {
+        const markdown = tasksToMarkdown(tasks);
+        const count = tasks.length;
+        const writeText = navigator.clipboard?.writeText;
+        if (typeof writeText !== "function") {
+            console.error("[outline] clipboard write failed: Clipboard API is unavailable");
+            setStatusError("クリップボードへのコピーに失敗しました");
+            return;
+        }
+        void writeText.call(navigator.clipboard, markdown).then(
+            () => {
+                clearStatusError();
+                setStatusMessage(`${count} 件をコピーしました`);
+            },
+            (error: unknown) => {
+                console.error("[outline] clipboard write failed:", error);
+                setStatusError("クリップボードへのコピーに失敗しました");
+            },
+        );
     };
 
     /**
@@ -587,6 +619,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         completeCursor,
         completeSelection,
         createSibling,
+        copyTasksAsMarkdown,
         commitInlineTitleEdit,
         commitDescriptionEdit,
         commitDueDateEdit,

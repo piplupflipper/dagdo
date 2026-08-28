@@ -185,7 +185,7 @@ src/
     outline/                        # アウトライナー本体
       components/
         outline-shell.tsx           # クライアント境界。木の組み立てとレイアウト (第 7.1 節)
-        outline-header.tsx          # 一覧上部のヘッダ（検索ボタン・V 切替・新規タスク・キーヒント）
+        outline-header.tsx          # 一覧上部のヘッダ（検索ボタン・V 切替・新規タスク・Markdown コピー・キーヒント）
         outline-pane.tsx            # 左ペイン全体（DndContext と行の一覧）
         outline-row.tsx             # 1 行（バレット+タイトル+期日チップ+🔒）
         inline-title-editor.tsx     # `i` / `I` / `a` / `A` の行内タイトル編集の input (第 6.4 節)
@@ -216,6 +216,7 @@ src/
         key-sequence.ts             # キーシーケンス表現のトークン分解・整形
         inline-title-edit.ts        # 行内タイトル編集の状態型と判定 (第 6.4 節)
         pane-ratio.ts               # ペイン比率の clamp と localStorage 値の解釈
+        tasks-to-markdown.ts        # 未削除タスク → Markdown 箇条書き (Issue #80)
         offline-store.ts            # オフラインモードの localStorage スナップショットの検証・読み書き (第 5.2 節)
 
     task-detail/                    # 右ペイン上部・モバイル詳細シート
@@ -950,7 +951,7 @@ app/page.tsx                          [Server Component]
   → getOutlineData で app_tasks / task_dependencies を並列取得 (第 8.1 節)
   └ OutlineShell                      [Client Component] ("use client")
       → build-tree.ts で表示順フラットリスト化・折りたたみと絞り込みの反映
-      ├ OutlineHeader                 [Client] (検索ボタン・V 切替・新規タスク・キーヒント)
+      ├ OutlineHeader                 [Client] (検索ボタン・V 切替・新規タスク・Markdown コピー・キーヒント)
       ├ OutlinePane                   [Client] (DndContext / SortableContext)
       │   ├ DependencyRail            [Client] (SVG)
       │   └ OutlineRow (繰り返し)      [Client]
@@ -1084,7 +1085,7 @@ Op 適用後のクライアント正 state（`tasks`）から毎レンダー組�
 
 エラー通知はステータス行（`StatusLine`）で行う。
 トーストは使わず、トーストライブラリも導入しない（第 12 章）。
-`StatusLine` は `errorMessage` を最優先で表示し、無ければ `infoMessage`（VISUAL の一括完了の件数）、それも無ければカーソル行の簡易情報を出す。
+`StatusLine` は `errorMessage` を最優先で表示し、無ければ `infoMessage`（VISUAL の一括完了の件数、Markdown コピー成功の件数）、それも無ければカーソル行の簡易情報を出す。
 
 ### 8.3 エラー契約
 
@@ -1183,7 +1184,7 @@ MPA action ではサーバー側が `Failed to find Server Action. This request 
 表示先は各画面の既存の仕組みに合わせる。
 アウトラインはステータス行、`TrashRow` は行内の `error`、`DependencySection` は節内の `dependencyError` である。
 後の 2 つは `TaskErrorCode` を前提とした文言の組み立て（`formatDependencyError`）を通せないため、reject 由来の日本語文言をそのまま同じ場所へ出す。
-`StatusLine` は `errorMessage` を `infoMessage`（VISUAL の一括完了の件数）より優先して表示する（第 8.2 節）。
+`StatusLine` は `errorMessage` を `infoMessage`（VISUAL の一括完了の件数、Markdown コピー成功の件数）より優先して表示する（第 8.2 節）。
 版ずれ停止中は、後続の操作の成功でこの文言を消さない（再読み込みの導線を出し続けるため。`use-outline-mutations.ts` の `clearStatusError`）。
 
 エラー境界そのものも `app/error.tsx` と `app/global-error.tsx` に置く。
@@ -1337,7 +1338,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 実行は `make fe-test`（`npm test` = `vitest run`）であり、品質ゲート `make check` の 3 段目に入る（第 3.6 節）。
 
 テストは対象と同じディレクトリに置く。
-主な対象は `lib/` 配下の純関数であり、次の 31 ファイル・386 件がある。
+主な対象は `lib/` 配下の純関数であり、次の 32 ファイル・392 件がある。
 
 | 対象 | テストファイル |
 |---|---|
@@ -1360,6 +1361,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | ドットリピート記述子 → ハンドラの変換（第 5.2 節） | `outline/lib/repeat-command.test.ts` |
 | `dd` の後継カーソルの解決（第 6.1 節） | `outline/lib/deletion-successor.test.ts` |
 | ペイン比率の clamp と保存値の解釈 | `outline/lib/pane-ratio.test.ts` |
+| 未削除タスク → Markdown 箇条書き (Issue #80) | `outline/lib/tasks-to-markdown.test.ts` |
 | オフラインの localStorage スナップショットの検証と往復（第 5.2 節） | `outline/lib/offline-store.test.ts` |
 | オフラインモードの通信なし・保存・復元・フォールバック（第 5.2 節） | `app/offline/page.test.tsx` |
 | 表示用状態の導出（done / blocked / ready） | `task-detail/lib/task-status.test.ts` |

@@ -6,15 +6,17 @@ type OutlineHeaderProps = {
     isInert: boolean;
     /** `+ 新規タスク`。キーボードの `o` と同じ経路 (カーソル行の下へ兄弟を作る) を通す */
     onCreateTask: () => void;
+    /** 未削除の全タスクを Markdown 箇条書きとしてクリップボードへコピーする (Issue #80) */
+    onCopyMarkdown: () => void;
 };
 
 /**
- * 一覧上部のヘッダ (検索欄を開くボタン・VISUAL の切り替え・新規タスク・キーヒント)
+ * 一覧上部のヘッダ (検索欄を開くボタン・VISUAL の切り替え・新規タスク・Markdown コピー・キーヒント)
  *
  * モードの参照と遷移はいずれも Zustand の selector 経由で行い、`useOutlineStore.getState()` の
  * 直接呼び出しは使わない (購読を伴わない読み出しはボタンの表示とモードがずれる余地を残すため)
  */
-export const OutlineHeader = ({ isInert, onCreateTask }: OutlineHeaderProps): JSX.Element => {
+export const OutlineHeader = ({ isInert, onCreateTask, onCopyMarkdown }: OutlineHeaderProps): JSX.Element => {
     const mode = useOutlineStore((state) => state.mode);
     const enterSearch = useOutlineStore((state) => state.enterSearch);
     const enterVisual = useOutlineStore((state) => state.enterVisual);
@@ -39,6 +41,9 @@ export const OutlineHeader = ({ isInert, onCreateTask }: OutlineHeaderProps): JS
             </button>
             <button type="button" onClick={onCreateTask} className="flex-shrink-0 rounded-base border border-border px-2.5 py-1.5 text-xs text-accent hover:bg-accent/10">
                 + 新規タスク
+            </button>
+            <button type="button" onClick={onCopyMarkdown} className="flex-shrink-0 rounded-base border border-border px-2.5 py-1.5 text-xs text-accent hover:bg-accent/10">
+                Markdown コピー
             </button>
             {/* キーボード操作のヒントはモバイル幅では意味がなく、横幅も圧迫するため md 以上でのみ表示する */}
             <span className="ml-auto hidden text-[11px] text-text-dim md:inline">j k 移動・x 完了・V 範囲選択・/ 検索・? ヘルプ</span>
