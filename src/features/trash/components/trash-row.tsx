@@ -1,3 +1,4 @@
+import { useRouter } from "next/navigation";
 import { type JSX, useState } from "react";
 import { permanentlyDeleteTask } from "@/features/task/actions/permanently-delete-task";
 import { restoreTask } from "@/features/task/actions/restore-task";
@@ -14,7 +15,9 @@ type TrashRowProps = {
  *
  * タイトル・削除日時・復元/完全削除ボタンを表示する。
  * 完全削除は不可逆のため window.confirm で確認してから permanentlyDeleteTask を呼ぶ。
- * 成功時は revalidatePath (各 Server Action 内) により親の RSC から流れ直す props で一覧が更新される。
+ * write-behind 化 (Issue #70) で restoreTask / permanentlyDeleteTask は revalidatePath を呼ばなくなったため、
+ * 成功時はここで `router.refresh()` を打ち、親の RSC から流れ直す props で一覧を更新する
+ * (応答を await する構造は現行のまま、SPEC §7)。
  *
  * 2 つの Server Action はいずれも `runServerAction` (task/lib/run-server-action.ts) を通す。
  * 素の await では reject が進行中フラグを戻す行を飛び越え、「復元中…」の disabled 表示のまま
@@ -27,6 +30,7 @@ export const TrashRow = ({ task }: TrashRowProps): JSX.Element => {
     const [isRestoring, setIsRestoring] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const router = useRouter();
 
     const isBusy = isRestoring || isDeleting;
 
@@ -37,7 +41,9 @@ export const TrashRow = ({ task }: TrashRowProps): JSX.Element => {
         setIsRestoring(false);
         if (!result.ok) {
             setError(result.message);
+            return;
         }
+        router.refresh();
     };
 
     const handlePermanentlyDelete = async (): Promise<void> => {
@@ -50,7 +56,9 @@ export const TrashRow = ({ task }: TrashRowProps): JSX.Element => {
         setIsDeleting(false);
         if (!result.ok) {
             setError(result.message);
+            return;
         }
+        router.refresh();
     };
 
     return (

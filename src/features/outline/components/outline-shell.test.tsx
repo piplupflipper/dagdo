@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OutlineShell } from "@/features/outline/components/outline-shell";
+import { resetOpQueueForTesting } from "@/features/outline/hooks/use-op-queue";
 import type { OutlineOp } from "@/features/outline/lib/outline-ops";
 import { useOutlineStore } from "@/store/outline-store";
 import type { AppTask, TaskDependency } from "@/types/task";
@@ -16,10 +17,17 @@ import type { AppTask, TaskDependency } from "@/types/task";
  */
 
 const callServerForOpMock = vi.fn();
+const routerRefreshMock = vi.fn();
 
 vi.mock("@/features/outline/lib/dispatch-op", () => ({
     callServerForOp: (...args: unknown[]) => callServerForOpMock(...args),
 }));
+// reconcile トリガ (Issue #70) が useRouter().refresh() を打つため差し替える。
+// run-server-action.ts が同モジュールの unstable_isUnrecognizedActionError を使うので、実体を残して useRouter だけを上書きする
+vi.mock("next/navigation", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("next/navigation")>();
+    return { ...actual, useRouter: () => ({ refresh: routerRefreshMock }) };
+});
 // 詳細ペインの依存追加・削除と、StatusLine のログアウト。いずれも Server Action であり、
 // 素の import は認証まわりのサーバー専用モジュールまで辿ってしまうため差し替える
 vi.mock("@/features/task/actions/add-dependency", () => ({ addDependency: vi.fn() }));
@@ -66,6 +74,8 @@ const tasks: AppTask[] = [task({ id: "task-1", title: "最初のタスク", sort
 const renderShell = (initialDependencies: TaskDependency[] = []): RenderResult => render(<OutlineShell userId="user-1" initialTasks={tasks} initialDependencies={initialDependencies} />);
 
 beforeEach(() => {
+    // Op キューの実体はモジュールスコープのシングルトンであり、前のケースの停止フラグや未送信 Op が残るため毎回消す
+    resetOpQueueForTesting();
     callServerForOpMock.mockResolvedValue({ ok: true, data: undefined });
     useOutlineStore.setState({
         mode: "NORMAL",
@@ -286,6 +296,62 @@ describe("Op キューの失敗", () => {
         expect(await screen.findByText("TASK_NOT_FOUND — task not found")).toBeTruthy();
         expect(firstToggleLabel()).toBe("✓");
         consoleError.mockRestore();
+    });
+});
+
+/**
+ * reconcile トリガと未同期表示 (Issue #70)
+ *
+ * キューが空になった瞬間と防波堤ヒットで残キューを破棄した直後に `router.refresh()` を打つ。
+ * 未同期の Op がある間はステータス行に「未同期 N 件」を常設表示する
+ */
+describe("reconcile トリガと未同期表示", () => {
+    it("キューが空になると router.refresh を打つ", async () => {
+        renderShell();
+        expect(routerRefreshMock).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+        await waitFor(() => expect(routerRefreshMock).toHaveBeenCalledTimes(1));
+    });
+
+    it("防波堤ヒットで残キューを破棄した直後にも router.refresh を打つ", async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        callServerForOpMock.mockResolvedValue({ ok: false, code: "TASK_NOT_FOUND", message: "task not found" });
+        renderShell();
+
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+
+        expect(await screen.findByText("TASK_NOT_FOUND — task not found")).toBeTruthy();
+        expect(routerRefreshMock).toHaveBeenCalledTimes(1);
+        consoleError.mockRestore();
+    });
+
+    it("unmount → 再マウントでも未同期件数を引き継ぐ (キューの実体はシングルトン)", async () => {
+        // 送信を保留にして in-flight の 1 件を未同期のまま残す (/trash への遷移中も送信は続く想定)
+        callServerForOpMock.mockImplementation(() => new Promise(() => undefined));
+        const view = renderShell();
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+        expect(await screen.findByText("未同期 1 件")).toBeTruthy();
+
+        view.unmount();
+        renderShell();
+        expect(await screen.findByText("未同期 1 件")).toBeTruthy();
+    });
+
+    it("未同期の Op がある間はステータス行に件数を出し、送信が終わると消す", async () => {
+        // 送信を保留にして in-flight の 1 件を未同期のまま残す
+        let resolveComplete: ((result: { ok: true; data: undefined }) => void) | undefined;
+        callServerForOpMock.mockImplementation(() => new Promise((resolve) => (resolveComplete = resolve)));
+        renderShell();
+        expect(screen.queryByText("未同期 1 件")).toBeNull();
+
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+        expect(await screen.findByText("未同期 1 件")).toBeTruthy();
+
+        await act(async () => {
+            resolveComplete?.({ ok: true, data: undefined });
+        });
+        expect(screen.queryByText("未同期 1 件")).toBeNull();
     });
 });
 

@@ -1,4 +1,5 @@
-import { type Dispatch, type SetStateAction, useState } from "react";
+import { useRouter } from "next/navigation";
+import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { useOpQueue } from "@/features/outline/hooks/use-op-queue";
 import { formatActionError, formatTaskError } from "@/features/outline/lib/action-error";
 import { findBlockingCause } from "@/features/outline/lib/blocking-cause";
@@ -106,16 +107,42 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
     /** undo (`u`) / redo (`U`) の履歴スタック (docs/frontend-design.md §5.2) */
     const [undoHistory, setUndoHistory] = useState<UndoHistoryState>(EMPTY_UNDO_HISTORY);
 
+    const router = useRouter();
+
     /**
      * 背後の直列 Op キュー
      *
      * 版ずれ停止と防波堤ヒット (残キュー破棄) はどちらもステータス行のエラーとして通知する。
-     * キュー空化の reconcile トリガ (router.refresh) は Phase 3 で繋ぐ
+     * reconcile トリガ (SPEC §6): キューが空になった瞬間 (onDrained) と防波堤ヒットで残キューを破棄した直後
+     * (onDiscard) に `router.refresh()` を打つ。届いた props を採用するかは reconcile ゲート
+     * (outline-shell.tsx) が判断する
      */
     const opQueue = useOpQueue({
         onVersionSkew: (message) => setStatusError(message),
-        onDiscard: (failure) => setStatusError(formatActionError(failure)),
+        onDiscard: (failure) => {
+            setStatusError(formatActionError(failure));
+            router.refresh();
+        },
+        onDrained: () => router.refresh(),
     });
+
+    // reconcile トリガの残る 1 つ: visibilitychange で visible へ復帰したとき (SPEC §6)。
+    // 別タブ・別デバイスでの変更を取り込む口であり、キューに未同期の Op がある間は打たない
+    // (打っても reconcile ゲートが無視するが、無駄な再取得を避ける)
+    useEffect(() => {
+        if (opQueue.pendingCount > 0) {
+            return;
+        }
+        const handleVisibilityChange = (): void => {
+            if (document.visibilityState === "visible") {
+                router.refresh();
+            }
+        };
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+        return () => {
+            document.removeEventListener("visibilitychange", handleVisibilityChange);
+        };
+    }, [opQueue.pendingCount, router]);
 
     const cursorTaskId = useOutlineStore((state) => state.cursorTaskId);
     const visualSelectedTaskIds = useOutlineStore((state) => state.visualSelectedTaskIds);

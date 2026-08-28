@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { callServerForOp } from "@/features/outline/lib/dispatch-op";
 import { EMPTY_OP_QUEUE, enqueueOp, type OpQueue, type OpQueueEntry } from "@/features/outline/lib/op-queue";
 import type { OutlineOp } from "@/features/outline/lib/outline-ops";
@@ -40,104 +40,175 @@ type OpQueueHandle = {
     enqueue: (op: OutlineOp, tasksSnapshot: AppTask[]) => void;
 };
 
+/** `useSyncExternalStore` へ渡す購読値。参照の同一性で変化を判定するため、更新のたびに作り直す */
+type OpQueueSnapshot = {
+    pendingCount: number;
+    isStopped: boolean;
+};
+
+const INITIAL_SNAPSHOT: OpQueueSnapshot = { pendingCount: 0, isStopped: false };
+
+/**
+ * キューの実体 (モジュールスコープのシングルトン)
+ *
+ * `OutlineShell` は /trash などへのクライアント遷移で unmount され得るが、送信中・未送信の Op は
+ * ブラウザセッションの間は生き続けなければならない。実体をフックの useRef に置くと、unmount 後も
+ * closure で回り続ける旧 flusher と、再マウントで生まれる空キューの 2 代目が並走して FIFO の
+ * 順序保証が崩れるため、状態と flusher をモジュールスコープへ置き、フックは購読と配線だけを担う
+ */
+let queue: OpQueue = EMPTY_OP_QUEUE;
+let inFlight: OpQueueEntry | null = null;
+let isStopped = false;
+let isFlushing = false;
+/** マウント中のフックが引き渡す最新のコールバック。unmount 中の発火は捨てる (setState は no-op で害がない) */
+let callbacks: UseOpQueueArgs | null = null;
+let snapshot: OpQueueSnapshot = INITIAL_SNAPSHOT;
+const listeners = new Set<() => void>();
+
+const subscribeToOpQueue = (listener: () => void): (() => void) => {
+    listeners.add(listener);
+    return () => {
+        listeners.delete(listener);
+    };
+};
+
+const getOpQueueSnapshot = (): OpQueueSnapshot => snapshot;
+
+/** SSR 中の購読値。モジュール初期化直後のクライアントと同じ値なので hydration 不一致は起きない */
+const getOpQueueServerSnapshot = (): OpQueueSnapshot => INITIAL_SNAPSHOT;
+
+/** 購読値を作り直してリスナへ知らせる。キュー・in-flight・停止フラグを動かしたら必ず呼ぶ */
+const notifyListeners = (): void => {
+    snapshot = { pendingCount: queue.length + (inFlight === null ? 0 : 1), isStopped };
+    for (const listener of listeners) {
+        listener();
+    }
+};
+
+/**
+ * flusher 本体。多重起動は isFlushing で防ぎ、キューが空になるか停止・破棄するまで回り続ける
+ *
+ * 1 エントリの送信は内側のリトライループが完了 (ack / 破棄 / 停止) まで抱え、
+ * その間に enqueue された Op は外側の while が次の周回で拾う
+ */
+const flush = async (): Promise<void> => {
+    if (isFlushing) {
+        return;
+    }
+    isFlushing = true;
+    try {
+        while (!isStopped) {
+            const head = queue[0];
+            if (head === undefined) {
+                break;
+            }
+            queue = queue.slice(1);
+            inFlight = head;
+
+            let retryDelayMs = INITIAL_RETRY_DELAY_MS;
+            let isSettled = false;
+            while (!isSettled) {
+                const result = await runServerAction(() => callServerForOp(head.op, head.tasksSnapshot));
+                if (result.ok) {
+                    inFlight = null;
+                    notifyListeners();
+                    if (queue.length === 0) {
+                        callbacks?.onDrained?.();
+                    }
+                    isSettled = true;
+                    continue;
+                }
+                if (isActionRejection(result)) {
+                    if (result.isVersionSkew) {
+                        // 停止。in-flight のエントリも残キューも捨てない (pendingCount に出続ける)
+                        isStopped = true;
+                        notifyListeners();
+                        callbacks?.onVersionSkew(result.message);
+                        return;
+                    }
+                    // 通信断など。同じエントリを先頭に留めたまま backoff で再送する
+                    console.error(`[outline] op ${head.op.type} rejected, retrying in ${retryDelayMs}ms: ${result.message}`);
+                    await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+                    retryDelayMs = Math.min(retryDelayMs * 2, MAX_RETRY_DELAY_MS);
+                    continue;
+                }
+                // サーバー防波堤 (DB エラー契約)。ここから先の Op は前提が崩れているため全破棄する
+                console.error(`[outline] op ${head.op.type} hit server guard, discarding queue: ${result.code} ${result.message}`);
+                queue = EMPTY_OP_QUEUE;
+                inFlight = null;
+                notifyListeners();
+                callbacks?.onDiscard(result);
+                return;
+            }
+        }
+    } finally {
+        isFlushing = false;
+    }
+};
+
+/** Op を末尾へ追加して flusher を起こす (シングルトンの入口)。coalesce (enqueueOp) は未送信配列にだけ効く */
+const enqueueToOpQueue = (op: OutlineOp, tasksSnapshot: AppTask[]): void => {
+    queue = enqueueOp(queue, { op, tasksSnapshot });
+    notifyListeners();
+    if (!isStopped) {
+        void flush();
+    }
+};
+
+/**
+ * シングルトンを初期状態へ戻すテスト専用の口
+ *
+ * テストはモジュールを共有するため、前のケースが残した停止フラグや未送信 Op を beforeEach で消す。
+ * 本番コードから呼んではならない (セッション中のキュー破棄は防波堤ヒットの 1 経路だけ)
+ */
+export const resetOpQueueForTesting = (): void => {
+    queue = EMPTY_OP_QUEUE;
+    inFlight = null;
+    isStopped = false;
+    isFlushing = false;
+    callbacks = null;
+    snapshot = INITIAL_SNAPSHOT;
+};
+
 /**
  * 直列 Op キューのフック層 (write-behind の送信側、Issue #70)
  *
- * 純関数層 (lib/op-queue.ts) が持つ未送信 FIFO 列に対し、単一の flusher ループで先頭から順に
- * Server Action へ送る。送信中のエントリは配列から取り出して別スロット (in-flight) で保持し、
- * 並行送信は絶対にしない (常に in-flight は最大 1)。coalesce (enqueueOp) が見るのは未送信配列だけなので、
- * 送信中のエントリが後から置き換わることも無い。
+ * キューの実体 (未送信 FIFO 列・in-flight・停止フラグ・flusher ループ) は上のモジュールスコープの
+ * シングルトンにあり、クライアント遷移で `OutlineShell` が unmount / 再マウントされても引き継がれる。
+ * このフックが担うのは次の 3 つだけである:
+ * - `useSyncExternalStore` で pendingCount / isStopped を購読する
+ * - 通知コールバックの最新版をシングルトンへ引き渡す (unmount 中の発火は捨てられる)
+ * - `pendingCount > 0` の間だけ beforeunload ハンドラを登録する (SPEC §2)
  *
- * 結果ハンドリング (SPEC §2):
+ * 結果ハンドリング (SPEC §2、flusher 側):
  * - `ok: true` → エントリを除去して次へ
  * - 版ずれ rejection → flusher を停止 (キューは保持、再読み込みで復旧)
  * - それ以外の rejection (通信断など) → 同じエントリを 1s → 2s → 4s … 上限 30s の backoff でリトライ
  * - `ok: false` (TaskErrorCode) → 残キューを全破棄して通知 (クライアント状態はサーバー正への reconcile で収束させる)
  */
 export const useOpQueue = ({ onVersionSkew, onDiscard, onDrained }: UseOpQueueArgs): OpQueueHandle => {
-    const [pendingCount, setPendingCount] = useState(0);
-    const [isStopped, setIsStopped] = useState(false);
+    const { pendingCount, isStopped: isStoppedSnapshot } = useSyncExternalStore(subscribeToOpQueue, getOpQueueSnapshot, getOpQueueServerSnapshot);
 
-    const queueRef = useRef<OpQueue>(EMPTY_OP_QUEUE);
-    const inFlightRef = useRef<OpQueueEntry | null>(null);
-    const isStoppedRef = useRef(false);
-    const isFlushingRef = useRef(false);
-    // 通知コールバックはレンダーごとに作り直されるため、長生きする flusher ループからは ref 越しに常に最新を呼ぶ
-    const callbacksRef = useRef<UseOpQueueArgs>({ onVersionSkew, onDiscard, onDrained });
-    callbacksRef.current = { onVersionSkew, onDiscard, onDrained };
+    // 通知コールバックはレンダーごとに作り直されるため、コミットのたびに最新をシングルトンへ引き渡す
+    useEffect(() => {
+        callbacks = { onVersionSkew, onDiscard, onDrained };
+    });
 
-    const syncPendingCount = (): void => {
-        setPendingCount(queueRef.current.length + (inFlightRef.current === null ? 0 : 1));
-    };
-
-    /**
-     * flusher 本体。多重起動は isFlushingRef で防ぎ、キューが空になるか停止・破棄するまで回り続ける
-     *
-     * 1 エントリの送信は内側のリトライループが完了 (ack / 破棄 / 停止) まで抱え、
-     * その間に enqueue された Op は外側の while が次の周回で拾う
-     */
-    const flush = async (): Promise<void> => {
-        if (isFlushingRef.current) {
+    // 未同期の Op がある間だけ beforeunload ハンドラを登録し、離脱確認を出す (SPEC §2)。
+    // preventDefault が現行の標準 (MDN)。returnValue への代入はレガシーブラウザ (Chrome 119 以前など) 向けの併用
+    useEffect(() => {
+        if (pendingCount === 0) {
             return;
         }
-        isFlushingRef.current = true;
-        try {
-            while (!isStoppedRef.current) {
-                const head = queueRef.current[0];
-                if (head === undefined) {
-                    break;
-                }
-                queueRef.current = queueRef.current.slice(1);
-                inFlightRef.current = head;
+        const handleBeforeUnload = (event: BeforeUnloadEvent): void => {
+            event.preventDefault();
+            event.returnValue = "";
+        };
+        window.addEventListener("beforeunload", handleBeforeUnload);
+        return () => {
+            window.removeEventListener("beforeunload", handleBeforeUnload);
+        };
+    }, [pendingCount]);
 
-                let retryDelayMs = INITIAL_RETRY_DELAY_MS;
-                let isSettled = false;
-                while (!isSettled) {
-                    const result = await runServerAction(() => callServerForOp(head.op, head.tasksSnapshot));
-                    if (result.ok) {
-                        inFlightRef.current = null;
-                        syncPendingCount();
-                        if (queueRef.current.length === 0) {
-                            callbacksRef.current.onDrained?.();
-                        }
-                        isSettled = true;
-                        continue;
-                    }
-                    if (isActionRejection(result)) {
-                        if (result.isVersionSkew) {
-                            // 停止。in-flight のエントリも残キューも捨てない (pendingCount に出続ける)
-                            isStoppedRef.current = true;
-                            setIsStopped(true);
-                            callbacksRef.current.onVersionSkew(result.message);
-                            return;
-                        }
-                        // 通信断など。同じエントリを先頭に留めたまま backoff で再送する
-                        console.error(`[outline] op ${head.op.type} rejected, retrying in ${retryDelayMs}ms: ${result.message}`);
-                        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-                        retryDelayMs = Math.min(retryDelayMs * 2, MAX_RETRY_DELAY_MS);
-                        continue;
-                    }
-                    // サーバー防波堤 (DB エラー契約)。ここから先の Op は前提が崩れているため全破棄する
-                    console.error(`[outline] op ${head.op.type} hit server guard, discarding queue: ${result.code} ${result.message}`);
-                    queueRef.current = EMPTY_OP_QUEUE;
-                    inFlightRef.current = null;
-                    syncPendingCount();
-                    callbacksRef.current.onDiscard(result);
-                    return;
-                }
-            }
-        } finally {
-            isFlushingRef.current = false;
-        }
-    };
-
-    const enqueue = (op: OutlineOp, tasksSnapshot: AppTask[]): void => {
-        queueRef.current = enqueueOp(queueRef.current, { op, tasksSnapshot });
-        syncPendingCount();
-        if (!isStoppedRef.current) {
-            void flush();
-        }
-    };
-
-    return { pendingCount, isStopped, enqueue };
+    return { pendingCount, isStopped: isStoppedSnapshot, enqueue: enqueueToOpQueue };
 };

@@ -337,7 +337,15 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                         onCancelInlineTitle={() => setInlineTitleEdit(null)}
                         onFocusOutlineList={focusOutlineList}
                     />
-                    <StatusLine mode={mode} cursorTask={cursorTask} totalCount={tasks.length} blockedCount={blockedCount} infoMessage={statusMessage} errorMessage={statusError} />
+                    <StatusLine
+                        mode={mode}
+                        cursorTask={cursorTask}
+                        totalCount={tasks.length}
+                        blockedCount={blockedCount}
+                        infoMessage={statusMessage}
+                        errorMessage={statusError}
+                        pendingCount={pendingCount}
+                    />
                 </div>
                 {/* dnd-kit の DndContext (行の並べ替え、OutlinePane 内) の外に置き、行 dnd とポインタ操作を競合させない */}
                 <PaneDivider containerRef={paneRowRef} ratio={leftPaneRatio} onRatioChange={setLeftPaneRatio} onDragEnd={handlePaneRatioDragEnd} />

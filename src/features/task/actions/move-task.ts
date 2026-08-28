@@ -11,7 +11,7 @@ import { defineTaskAction } from "@/features/task/lib/define-task-action";
  * `newPosition` は論理削除済みも含めた実 position であり、`null` は新しい sibling group の末尾を表す
  * (supabase/migrations/20260813000002_move_task_append_to_tail.sql、Issue #53)
  */
-export const moveTask = defineTaskAction<{ taskId: string; newParentId: string | null; newPosition: number | null }>(["/"], async ({ client }, { taskId, newParentId, newPosition }) => {
+export const moveTask = defineTaskAction<{ taskId: string; newParentId: string | null; newPosition: number | null }>(async ({ client }, { taskId, newParentId, newPosition }) => {
     // p_new_parent_id / p_new_position は generated types 上 non-null 型だが、move_task RPC は
     // どちらも NULL (順に「ルート直下への移動」「末尾へ追加」) を受け付ける。
     // generated types が Postgres 関数引数の nullability を反映しない既知の制約であるため、
