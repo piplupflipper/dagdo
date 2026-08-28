@@ -68,7 +68,7 @@ export const KeymapHelpOverlay = ({ isOpen, onClose }: KeymapHelpOverlayProps): 
                 aria-modal="true"
                 aria-labelledby={TITLE_ID}
                 tabIndex={-1}
-                className="w-full max-w-3xl rounded-base border border-border bg-bg font-mono text-sm text-text shadow-xl backdrop-blur-xl outline-none"
+                className="w-full max-w-3xl rounded-base border border-border bg-bg font-mono text-sm text-text shadow-xl backdrop-blur-xl outline-none lg:max-w-5xl"
             >
                 <div className="flex items-center gap-2 border-b border-border bg-bg-alt px-3.5 py-2">
                     <h2 id={TITLE_ID} className="text-[13px] font-semibold">
@@ -88,7 +88,7 @@ export const KeymapHelpOverlay = ({ isOpen, onClose }: KeymapHelpOverlayProps): 
                 </div>
 
                 {/* NORMAL とそれ以外でエントリ数の差が大きいため、items-start でセクションを引き伸ばさず上端で揃える */}
-                <div className="grid items-start gap-x-6 gap-y-4 px-3.5 py-3 md:grid-cols-2">
+                <div className="grid items-start gap-x-6 gap-y-4 px-3.5 py-3 md:grid-cols-2 lg:grid-cols-3">
                     {HELP_SECTIONS.map((section) => (
                         <section key={section.mode}>
                             <h3 className="mb-1 border-b border-border pb-1 text-[11px] font-semibold tracking-wide text-accent">{section.mode}</h3>
