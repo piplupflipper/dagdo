@@ -270,6 +270,9 @@ describe("ドットリピート", () => {
     /** 一覧に描かれた行の taskId を表示順で取り出す */
     const rowOrder = (): string[] => Array.from(document.querySelectorAll("[data-task-id]")).map((row) => row.getAttribute("data-task-id") ?? "");
 
+    /** カーソル行の taskId (カーソルなしなら null) */
+    const cursorRowTaskId = (): string | null => document.querySelector('[data-cursor="true"]')?.getAttribute("data-task-id") ?? null;
+
     /** 3 行のフラットな一覧。`J` の繰り返しで並びの変化を追うために使う */
     const threeTasks: AppTask[] = [
         task({ id: "task-1", title: "一番目", sortPath: [0] }),
@@ -317,6 +320,31 @@ describe("ドットリピート", () => {
         fireEvent.keyDown(document, { key: "." });
         expect(rowOrder()).toEqual(["task-3", "task-1", "task-2"]);
         expect(callServerForOpMock).not.toHaveBeenCalledWith({ type: "complete", taskId: "task-1" }, expect.anything());
+    });
+
+    it("中間行の `dd` はカーソルを 1 つ下の行へ移す (Issue #76)", () => {
+        render(<OutlineShell userId="user-1" initialTasks={threeTasks} initialDependencies={[]} />);
+        fireEvent.click(within(screen.getByRole("listbox", { name: "タスク一覧" })).getByText("二番目"));
+        fireEvent.keyDown(document, { key: "d" });
+        fireEvent.keyDown(document, { key: "d" });
+
+        expect(rowOrder()).toEqual(["task-1", "task-3"]);
+        expect(cursorRowTaskId()).toBe("task-3");
+    });
+
+    it("最終行の `dd` はカーソルを 1 つ上の行へ移し、`.` は先頭行ではなくその行を削除する (Issue #76)", () => {
+        render(<OutlineShell userId="user-1" initialTasks={threeTasks} initialDependencies={[]} />);
+        fireEvent.click(within(screen.getByRole("listbox", { name: "タスク一覧" })).getByText("三番目"));
+        fireEvent.keyDown(document, { key: "d" });
+        fireEvent.keyDown(document, { key: "d" });
+
+        // 修正前はカーソル行が可視行から消えたことでストアの clamp が先頭行 (task-1) へ寄せていた
+        expect(rowOrder()).toEqual(["task-1", "task-2"]);
+        expect(cursorRowTaskId()).toBe("task-2");
+
+        fireEvent.keyDown(document, { key: "." });
+        expect(rowOrder()).toEqual(["task-1"]);
+        expect(cursorRowTaskId()).toBe("task-1");
     });
 
     it("レジスタが空のときの `.` は no-op", async () => {

@@ -670,7 +670,7 @@ NORMAL モード。
 | `<` | 親を 1 階層上げる（outdent） | `move` Op。新しい parent・position は `computeOutdent` が求める |
 | `>` | 親を 1 階層下げる（indent。直前行を新しい親にする） | `move` Op。新しい parent・position は `computeIndent` が求める |
 | `V` | ビジュアルモードへ | 第 5.1 節参照 |
-| `dd` | ゴミ箱へ移動 | `softDelete` Op。連続 2 打鍵で確定する（vim の `dd` に倣う。pending key 方式、第 6.2 節） |
+| `dd` | ゴミ箱へ移動 | `softDelete` Op。連続 2 打鍵で確定する（vim の `dd` に倣う。pending key 方式、第 6.2 節）。カーソルは 1 つ下（最終行なら 1 つ上）の可視行へ移す（`deletion-successor.ts`、Issue #76）。ストアの clamp（第 5.1 節）に任せると先頭行へ飛び、続く `.` が先頭行を削除してしまうため |
 | `.` | 直前の変更を繰り返す | ドットリピート（第 5.2 節）。記録対象は `x` / `dd` / `J` / `K` / `<` / `>` の 6 キー（5 種の変更）のみ |
 | `/` | 検索モードへ | 第 5.1 節参照 |
 | `?` | キーバインドのヘルプを表示 | ヘルプオーバーレイを開く。表示内容は keymap テーブルから生成する（第 6.3 節） |
@@ -1307,7 +1307,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 実行は `make fe-test`（`npm test` = `vitest run`）であり、品質ゲート `make check` の 3 段目に入る（第 3.6 節）。
 
 テストは対象と同じディレクトリに置く。
-主な対象は `lib/` 配下の純関数であり、次の 28 ファイル・366 件がある。
+主な対象は `lib/` 配下の純関数であり、次の 29 ファイル・372 件がある。
 
 | 対象 | テストファイル |
 |---|---|
@@ -1328,6 +1328,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | キーシーケンスのトークン分解・整形 | `outline/lib/key-sequence.test.ts` |
 | 行内タイトル編集の状態判定 | `outline/lib/inline-title-edit.test.ts` |
 | ドットリピート記述子 → ハンドラの変換（第 5.2 節） | `outline/lib/repeat-command.test.ts` |
+| `dd` の後継カーソルの解決（第 6.1 節） | `outline/lib/deletion-successor.test.ts` |
 | ペイン比率の clamp と保存値の解釈 | `outline/lib/pane-ratio.test.ts` |
 | 表示用状態の導出（done / blocked / ready） | `task-detail/lib/task-status.test.ts` |
 | 依存操作のエラー文言 | `task-detail/lib/dependency-error.test.ts` |
