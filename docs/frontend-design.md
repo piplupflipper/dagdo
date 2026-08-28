@@ -170,14 +170,16 @@ src/
     error.tsx                       # ページ配下のエラー境界 (第 8.4 節)
     global-error.tsx                # ルートレイアウトごと差し替わるエラー境界 (第 8.4 節)
     login/
-      page.tsx                      # ログイン画面 (req.md §30 の /login)
+      page.tsx                      # ログイン画面 (req.md §30 の /login)。/offline への導線を持つ
+    offline/
+      page.tsx                      # ログイン不要のオフラインモード (Client Component、第 5.2 節、Issue #81)
     trash/
       page.tsx                      # ゴミ箱専用ルート (RSC)。deleted_at IS NOT NULL のみ取得
     api/
       auth/[...nextauth]/route.ts   # Auth.js route handler（src/auth.ts の handlers を re-export）
 
   auth.ts                           # Auth.js の設定本体 (docs/auth-design.md §3.6)
-  middleware.ts                     # src/ 直下 (app/ の外)。未ログイン時に /login へリダイレクト (docs/auth-design.md §6)
+  middleware.ts                     # src/ 直下 (app/ の外)。未ログイン時に /login へリダイレクト (/login と /offline は除外、docs/auth-design.md §6)
 
   features/
     outline/                        # アウトライナー本体
@@ -214,6 +216,7 @@ src/
         key-sequence.ts             # キーシーケンス表現のトークン分解・整形
         inline-title-edit.ts        # 行内タイトル編集の状態型と判定 (第 6.4 節)
         pane-ratio.ts               # ペイン比率の clamp と localStorage 値の解釈
+        offline-store.ts            # オフラインモードの localStorage スナップショットの検証・読み書き (第 5.2 節)
 
     task-detail/                    # 右ペイン上部・モバイル詳細シート
       components/
@@ -593,6 +596,33 @@ vim の `.` に倣い、直前の変更を現在のカーソル行へ再適用�
 `.` 自身はレジスタを書き換えないため、連打で同じ変更を繰り返せる。
 再発行先に渡すのはレジスタへ記録しない内部版のハンドラ群（`execute*`）であり、書き換えが構造的に起きない。
 レジスタは `use-outline-mutations.ts` の state（非永続）であり、Zustand には置かない。
+
+#### 永続化アダプタとオフラインモード
+
+Op の永続化先は注入可能なアダプタ `OutlinePersistence`（`use-outline-mutations.ts`）で表す（Issue #81）。
+
+```typescript
+type OutlinePersistence = {
+    persist: (op: OutlineOp, tasksSnapshot: AppTask[]) => void; // tasksSnapshot は適用前の一覧
+    pendingCount: number;
+    isStopped: boolean;
+};
+```
+
+`OutlineShell` の props で省略した場合（オンライン、`app/page.tsx`）は直列 Op キューへの enqueue を包んだアダプタが使われ、本節ここまでの記述がそのまま成り立つ。
+
+`/offline`（`app/offline/page.tsx`）はログイン不要のオフラインモードであり、localStorage 保存のアダプタを注入する。
+データはブラウザの localStorage（キー `dagdo-offline-v1`、`{ tasks, dependencies }` の JSON、`offline-store.ts`）のみに保持し、Supabase・Server Actions へは一切通信しない。
+アカウントとは別世界であり、後でログインしても取り込まない（2026-08-28 の判断）。
+
+- 読み込みは mount 後の `useEffect` で行い、初期レンダーは空で描く（SSR とのハイドレーション不整合の回避。ペイン比率の復元と同じ考え方、第 7.1 節）。壊れた JSON・スキーマ不一致は空データへフォールバックする
+- 保存は Op の適用のたびに、適用前スナップショットへ `applyOutlineOp`（setState 側と同じ純関数・同じ引数）を適用した適用後の全量を同期で書く
+- 未同期・版ずれの概念が無いため `pendingCount` は常に 0、`isStopped` は常に false。reconcile の `router.refresh()`（第 8.6 節）も visibilitychange も登録しない
+- 依存関係の編集（`DependencySection`）とゴミ箱はオフラインでは持たない。`dd` はローカルから除去し、undo でのみ戻る。`create` の user_id は固定の sentinel `"offline"` を使う
+- ステータス行はゴミ箱・ログアウトの導線の代わりに `/login` への導線を出す
+
+`middleware.ts` の認証リダイレクトは `/offline` を除外する（`/login` と同列）。
+アウトライナー本体（クライアント正 state・`applyOutlineOp`・undo/redo・ドットリピート・keymap・dnd）は同じ `OutlineShell` であり、オンラインとオフラインでコンポーネントを分けない。
 
 #### `DetailPane` の編集と依存関係
 
@@ -1307,7 +1337,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 実行は `make fe-test`（`npm test` = `vitest run`）であり、品質ゲート `make check` の 3 段目に入る（第 3.6 節）。
 
 テストは対象と同じディレクトリに置く。
-主な対象は `lib/` 配下の純関数であり、次の 29 ファイル・372 件がある。
+主な対象は `lib/` 配下の純関数であり、次の 31 ファイル・386 件がある。
 
 | 対象 | テストファイル |
 |---|---|
@@ -1330,6 +1360,8 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | ドットリピート記述子 → ハンドラの変換（第 5.2 節） | `outline/lib/repeat-command.test.ts` |
 | `dd` の後継カーソルの解決（第 6.1 節） | `outline/lib/deletion-successor.test.ts` |
 | ペイン比率の clamp と保存値の解釈 | `outline/lib/pane-ratio.test.ts` |
+| オフラインの localStorage スナップショットの検証と往復（第 5.2 節） | `outline/lib/offline-store.test.ts` |
+| オフラインモードの通信なし・保存・復元・フォールバック（第 5.2 節） | `app/offline/page.test.tsx` |
 | 表示用状態の導出（done / blocked / ready） | `task-detail/lib/task-status.test.ts` |
 | 依存操作のエラー文言 | `task-detail/lib/dependency-error.test.ts` |
 | 依存先タスクの実体の引き直し | `task/lib/depends-on-tasks.test.ts` |
