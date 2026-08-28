@@ -197,6 +197,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         completeCursor,
         completeSelection,
         createSibling,
+        copyTasksAsMarkdown,
         commitInlineTitleEdit,
         commitDescriptionEdit,
         commitDueDateEdit,
@@ -311,7 +312,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
              * SearchOverlay は mode === "SEARCH" のときだけ描画されるが、? は NORMAL のエントリで、
              * SEARCH へ入る導線 (`/` とヘッダの検索ボタン) は表示中どちらも封じられるため対象外でよい
              */}
-            <OutlineHeader isInert={isHelpOpen} onCreateTask={() => createSibling("below")} />
+            <OutlineHeader isInert={isHelpOpen} onCreateTask={() => createSibling("below")} onCopyMarkdown={copyTasksAsMarkdown} />
 
             {/*
              * PC 幅は 2 ペイン、モバイル幅は左ペイン全幅 + MobileDetailSheet。切り替えは Tailwind のブレークポイントのみで行う。
