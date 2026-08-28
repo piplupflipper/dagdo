@@ -13,6 +13,13 @@ type StatusLineProps = {
     errorMessage: string | null;
     /** Op キューの未同期件数 (送信中含む)。0 より大きい間だけ「未同期 N 件」を常設表示する (Issue #70) */
     pendingCount: number;
+    /**
+     * オフラインモードか (Issue #81)。既定はオンライン (false)
+     *
+     * オフラインではゴミ箱への導線を出さず (dd はローカル除去のみで undo でだけ戻る)、
+     * ログアウトの代わりにログインへの導線を出す
+     */
+    isOfflineMode?: boolean;
 };
 
 const MODE_LABEL: Record<OutlineMode, string> = {
@@ -28,7 +35,7 @@ const MODE_LABEL: Record<OutlineMode, string> = {
  * それもなければカーソル行の簡易情報を表示する。
  * 未同期件数 (`pendingCount`) はこれらのメッセージとは別枠で、件数表示の並びに控えめに常設する (SPEC §8)
  */
-export const StatusLine = ({ mode, cursorTask, totalCount, blockedCount, infoMessage, errorMessage, pendingCount }: StatusLineProps): JSX.Element => {
+export const StatusLine = ({ mode, cursorTask, totalCount, blockedCount, infoMessage, errorMessage, pendingCount, isOfflineMode = false }: StatusLineProps): JSX.Element => {
     const cursorInfo = cursorTask !== null ? `カーソル: ${cursorTask.title}${cursorTask.is_blocked ? " [blocked]" : ""}` : "カーソル: (なし)";
     const displayMessage = errorMessage ?? infoMessage ?? cursorInfo;
 
@@ -42,10 +49,18 @@ export const StatusLine = ({ mode, cursorTask, totalCount, blockedCount, infoMes
             <span className="flex-shrink-0 text-text-dim">
                 {totalCount}件 / blocked {blockedCount}
             </span>
-            <Link href="/trash" className="flex-shrink-0 text-text-dim hover:text-accent hover:underline">
-                ゴミ箱
-            </Link>
-            <LogoutButton />
+            {isOfflineMode ? (
+                <Link href="/login" className="flex-shrink-0 text-text-dim hover:text-accent hover:underline">
+                    ログインへ
+                </Link>
+            ) : (
+                <>
+                    <Link href="/trash" className="flex-shrink-0 text-text-dim hover:text-accent hover:underline">
+                        ゴミ箱
+                    </Link>
+                    <LogoutButton />
+                </>
+            )}
         </div>
     );
 };

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { LoginButton } from "@/features/auth/components/login-button";
@@ -6,7 +7,8 @@ import { getSessionUserId } from "@/features/auth/lib/get-session-user";
 /**
  * ログイン画面 (req.md §30、docs/auth-design.md §3.5)
  *
- * pages.signIn (src/auth.ts) の遷移先。GitHub OAuth ログインボタンのみを表示する。
+ * pages.signIn (src/auth.ts) の遷移先。GitHub OAuth ログインボタンと、ログインせずに使う
+ * オフラインモード (/offline、Issue #81) への控えめな導線を表示する。
  * ログイン済みセッションが既に存在する場合は / へ redirect する
  * (getSessionUserId が throw しなければログイン済みと判定する。src/app/page.tsx と対称)
  */
@@ -28,6 +30,10 @@ const LoginPage = async (): Promise<ReactNode> => {
                 <h1 className="text-xl font-semibold tracking-tight">dagdo</h1>
                 <p className="text-center text-sm text-text-dim">タスクの構造と依存関係を、ひとつのアウトラインで管理します</p>
                 <LoginButton />
+                {/* ログインボタンより控えめな導線。オフラインモードは localStorage のみ・アカウントとは別世界のデータになる */}
+                <Link href="/offline" className="text-xs text-text-dim underline-offset-2 hover:text-accent hover:underline">
+                    ログインせずにオフラインで使う (データはこのブラウザにのみ保存)
+                </Link>
             </div>
         </div>
     );
