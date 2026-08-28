@@ -1,7 +1,6 @@
 "use client";
 
 import { type JSX, type Ref, useImperativeHandle, useRef, useState } from "react";
-import { isSameLogicalRow } from "@/features/task/lib/temp-id-renames";
 import { resolveStatus, type TaskStatus } from "@/features/task-detail/lib/task-status";
 import { formatDateTime, isOverdue } from "@/lib/date/timezone";
 import type { AppTask, TaskDependency } from "@/types/task";
@@ -22,15 +21,6 @@ export type DetailPaneProps = {
     task: AppTask | null;
     allTasks: AppTask[];
     dependencies: TaskDependency[];
-    /**
-     * `OutlineShell` の `createSibling` が settle 時に記録する、tempId → 実id の対応表
-     *
-     * `task` は `OutlineShell` の `cursorTask` (id で解決) をそのまま渡されるため、楽観 create の
-     * tempId が実id へ切り替わった瞬間、`task.id` も tempId → 実id へ変わる。下の `currentTaskId !== lastTaskId`
-     * 判定は本来「別のタスクへ切り替わった」ことを検知する調整だが、この対応表に載っている変化であれば
-     * 「同一論理タスクの id 付け替え」なので、タイトル/説明/期日の編集下書きを破棄しない
-     */
-    tempIdRenames: ReadonlyMap<string, string>;
     /**
      * 編集領域 (タイトル・説明・期日・依存先追加) で `Esc` を押した際、一覧へフォーカスを戻す共通ヘルパー
      *
@@ -96,7 +86,7 @@ const STATUS_BADGE_CLASS: Record<TaskStatus, string> = {
  * フォーカスを一覧側へ戻し、document の keydown ハンドラ（`use-outline-keymap.ts`）の `isEditableTarget` 抑止から
  * 抜けて NORMAL の操作へ復帰する (docs/frontend-design.md §6.1)
  */
-export const DetailPane = ({ task, allTasks, dependencies, tempIdRenames, onEscapeToOutline, onCommitTitle, onCommitDescription, onCommitDueDate, ref }: DetailPaneProps): JSX.Element => {
+export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, onCommitTitle, onCommitDescription, onCommitDueDate, ref }: DetailPaneProps): JSX.Element => {
     // タスク切替時にのみ編集状態をリセットする (レンダー中の state 調整。React 公式の推奨パターンであり
     // useEffect による同期を避けることで useOutlineKeymap 側と同様に「必要な処理だけを行う」構成にする)
     const [lastTaskId, setLastTaskId] = useState<string | null>(task?.id ?? null);
@@ -121,13 +111,8 @@ export const DetailPane = ({ task, allTasks, dependencies, tempIdRenames, onEsca
 
     const currentTaskId = task?.id ?? null;
     if (currentTaskId !== lastTaskId) {
-        // tempId → 実id への付け替え (tempIdRenames のコメント参照) であれば、
-        // 「別のタスクへ切り替わった」わけではないので編集下書きを破棄しない
-        const isSameLogicalTask = isSameLogicalRow(tempIdRenames, lastTaskId, currentTaskId);
         setLastTaskId(currentTaskId);
-        if (!isSameLogicalTask) {
-            setResetToken((previous) => previous + 1);
-        }
+        setResetToken((previous) => previous + 1);
     }
 
     if (task === null) {

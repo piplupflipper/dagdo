@@ -11,9 +11,13 @@ import type { ActionResult } from "@/features/task/lib/action-result";
  * クライアント層のこの型で表す。`code` を持たないのはそのためである。
  *
  * `task` feature に置くのは、アウトライン・ゴミ箱・詳細ペインのいずれもがこの失敗形を要るためである
- * (feature 間の import は一方向に保つ、docs/frontend-design.md §4)
+ * (feature 間の import は一方向に保つ、docs/frontend-design.md §4)。
+ *
+ * `isVersionSkew` は reject の原因が版ずれ (デプロイで Server Action ID が変わった) かどうかの判別フラグである。
+ * Op キューの flusher (use-op-queue.ts) は版ずれなら停止し、それ以外 (通信断など) なら backoff リトライする、
+ * という分岐をこのフラグで行う (message 文言の一致に頼らない、Issue #70)
  */
-export type ActionRejection = { ok: false; rejected: true; message: string };
+export type ActionRejection = { ok: false; rejected: true; message: string; isVersionSkew: boolean };
 
 /** Server Action を await した結果。値として返った `ActionResult` か、reject を捕まえた `ActionRejection` のいずれか */
 export type ActionOutcome<T = void> = ActionResult<T> | ActionRejection;
@@ -81,7 +85,7 @@ const readReasonMessage = (reason: unknown): string => {
 export const toActionRejection = (reason: unknown, isKnownStaleDeployment?: (reason: unknown) => boolean): ActionRejection => {
     const message = readReasonMessage(reason);
     const isStaleDeployment = isKnownStaleDeployment?.(reason) === true || STALE_DEPLOYMENT_MESSAGE_MARKERS.some((marker) => message.includes(marker));
-    return { ok: false, rejected: true, message: isStaleDeployment ? STALE_DEPLOYMENT_MESSAGE : TRANSPORT_FAILURE_MESSAGE };
+    return { ok: false, rejected: true, message: isStaleDeployment ? STALE_DEPLOYMENT_MESSAGE : TRANSPORT_FAILURE_MESSAGE, isVersionSkew: isStaleDeployment };
 };
 
 /** 失敗した `ActionOutcome` が reject 由来かどうか (`code` を持たない側かどうか) を読む述語 */

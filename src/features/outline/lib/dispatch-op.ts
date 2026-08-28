@@ -22,7 +22,7 @@ import type { AppTask } from "@/types/task";
 export const callServerForOp = (op: OutlineOp, tasksSnapshot: readonly AppTask[]): Promise<ActionResult<unknown>> => {
     switch (op.type) {
         case "create":
-            return createTask({ title: op.title, parentId: op.parentId, position: op.position });
+            return createTask({ id: op.id, title: op.title, parentId: op.parentId, position: op.position });
         case "complete":
             return completeTask({ taskId: op.taskId });
         case "reopen":

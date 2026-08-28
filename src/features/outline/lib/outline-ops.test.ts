@@ -182,7 +182,7 @@ describe("applyOutlineOp: updateDescription / updateDueDate の単純フィー�
 describe("applyOutlineOp: create の兄弟末尾/途中挿入", () => {
     it("position を省略すると兄弟グループの末尾に追加する", () => {
         const tasks = [task({ id: "a", position: 0 }), task({ id: "b", position: 1 })];
-        const result = applyOutlineOp(tasks, [], { type: "create", tempId: "temp-1", title: "新規タスク", parentId: null, position: null });
+        const result = applyOutlineOp(tasks, [], { type: "create", id: "temp-1", title: "新規タスク", parentId: null, position: null });
         const created = byId(result).get("temp-1");
         expect(created?.position).toBe(2);
         expect(byId(result).get("a")?.position).toBe(0);
@@ -191,7 +191,7 @@ describe("applyOutlineOp: create の兄弟末尾/途中挿入", () => {
 
     it("position を指定すると、その位置以降の兄弟を +1 ずらして割り込む", () => {
         const tasks = [task({ id: "a", position: 0 }), task({ id: "b", position: 1 }), task({ id: "c", position: 2 })];
-        const result = applyOutlineOp(tasks, [], { type: "create", tempId: "temp-1", title: "新規タスク", parentId: null, position: 1 });
+        const result = applyOutlineOp(tasks, [], { type: "create", id: "temp-1", title: "新規タスク", parentId: null, position: 1 });
         const map = byId(result);
         expect(map.get("a")?.position).toBe(0);
         expect(map.get("temp-1")?.position).toBe(1);
@@ -201,7 +201,7 @@ describe("applyOutlineOp: create の兄弟末尾/途中挿入", () => {
 
     it("親を指定すると子として作られ、他の親を持つ兄弟には影響しない", () => {
         const tasks = [task({ id: "parent", position: 0 }), task({ id: "child", parentId: "parent", position: 0 }), task({ id: "other-root", position: 1 })];
-        const result = applyOutlineOp(tasks, [], { type: "create", tempId: "temp-1", title: "新規タスク", parentId: "parent", position: 0 });
+        const result = applyOutlineOp(tasks, [], { type: "create", id: "temp-1", title: "新規タスク", parentId: "parent", position: 0 });
         const map = byId(result);
         expect(map.get("temp-1")?.parent_id).toBe("parent");
         expect(map.get("temp-1")?.position).toBe(0);
@@ -210,7 +210,7 @@ describe("applyOutlineOp: create の兄弟末尾/途中挿入", () => {
     });
 
     it("tasks が 0 件のときは fallbackUserId を user_id として使う", () => {
-        const result = applyOutlineOp([], [], { type: "create", tempId: "temp-1", title: "最初のタスク", parentId: null, position: null }, { fallbackUserId: "session-user" });
+        const result = applyOutlineOp([], [], { type: "create", id: "temp-1", title: "最初のタスク", parentId: null, position: null }, { fallbackUserId: "session-user" });
         expect(result[0]?.user_id).toBe("session-user");
         expect(result[0]?.position).toBe(0);
     });

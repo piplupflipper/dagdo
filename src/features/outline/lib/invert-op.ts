@@ -58,8 +58,9 @@ export const invertOutlineOp = (op: OutlineOp, tasksSnapshot: readonly AppTask[]
                   ];
 
         case "create":
-            // `create` の逆操作は tempId ではなく Server Action の応答で判明する実 id を要るため、
-            // ここでは組み立てられない (`createSibling` が settle 後に自前で積む)
+            // `create` の履歴は undo = softDelete / redo = restore の対で表す (redo を create の再送にすると
+            // 同一 id の INSERT がサーバー防波堤に当たる)。redo 側の restore が要る「作成直後の行」のスナップショットは
+            // 適用後の一覧からしか取れないため、ここでは組み立てず `createSibling` が自前で積む
             return null;
 
         case "restore":

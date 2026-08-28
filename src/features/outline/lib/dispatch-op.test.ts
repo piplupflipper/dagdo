@@ -49,9 +49,9 @@ beforeEach(() => {
 });
 
 describe("callServerForOp: Op から Server Action への振り分け", () => {
-    it("create は tempId を渡さず title / parentId / position だけを渡す", async () => {
-        await callServerForOp({ type: "create", tempId: "temp-1", title: "新しいタスク", parentId: "parent-1", position: 2 }, []);
-        expect(createTask).toHaveBeenCalledWith({ title: "新しいタスク", parentId: "parent-1", position: 2 });
+    it("create はクライアント採番の id ごと createTask へ渡す", async () => {
+        await callServerForOp({ type: "create", id: "id-1", title: "新しいタスク", parentId: "parent-1", position: 2 }, []);
+        expect(createTask).toHaveBeenCalledWith({ id: "id-1", title: "新しいタスク", parentId: "parent-1", position: 2 });
     });
 
     it("complete は completeTask を呼ぶ", async () => {
@@ -129,7 +129,7 @@ describe("callServerForOp: 戻り値", () => {
     });
 
     it("create の戻り値 (実 id) も欠落させずに返す", async () => {
-        const result = await callServerForOp({ type: "create", tempId: "temp-1", title: "t", parentId: null, position: null }, []);
+        const result = await callServerForOp({ type: "create", id: "id-1", title: "t", parentId: null, position: null }, []);
         expect(result).toEqual({ ok: true, data: { id: "created-1" } });
     });
 });
@@ -137,7 +137,7 @@ describe("callServerForOp: 戻り値", () => {
 describe("callServerForOp: 網羅性", () => {
     it("OutlineOp の全 type が Server Action へ振り分けられる (未処理の分岐で undefined を返さない)", async () => {
         const ops: readonly OutlineOp[] = [
-            { type: "create", tempId: "temp-1", title: "t", parentId: null, position: null },
+            { type: "create", id: "id-1", title: "t", parentId: null, position: null },
             { type: "complete", taskId: "a" },
             { type: "reopen", taskId: "a" },
             { type: "updateTitle", taskId: "a", title: "t" },

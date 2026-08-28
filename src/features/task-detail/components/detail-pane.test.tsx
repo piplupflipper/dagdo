@@ -39,7 +39,7 @@ const task = ({ id, title = id, description = "", dueDate = null }: { id: string
     updated_at: "2026-08-13T00:00:00.000Z",
 });
 
-const renderPane = (overrides: { task?: AppTask; allTasks?: AppTask[]; dependencies?: TaskDependency[]; tempIdRenames?: ReadonlyMap<string, string> } = {}) => {
+const renderPane = (overrides: { task?: AppTask; allTasks?: AppTask[]; dependencies?: TaskDependency[] } = {}) => {
     const handlers = {
         onEscapeToOutline: vi.fn(),
         onCommitTitle: vi.fn(),
@@ -48,19 +48,10 @@ const renderPane = (overrides: { task?: AppTask; allTasks?: AppTask[]; dependenc
     };
     const ref = createRef<DetailPaneHandle>();
     const currentTask = overrides.task ?? task({ id: "task-1", title: "元のタイトル", description: "元の説明" });
-    const view = render(
-        <DetailPane
-            ref={ref}
-            task={currentTask}
-            allTasks={overrides.allTasks ?? [currentTask]}
-            dependencies={overrides.dependencies ?? []}
-            tempIdRenames={overrides.tempIdRenames ?? new Map()}
-            {...handlers}
-        />,
-    );
+    const view = render(<DetailPane ref={ref} task={currentTask} allTasks={overrides.allTasks ?? [currentTask]} dependencies={overrides.dependencies ?? []} {...handlers} />);
     /** 同じ props のまま task だけを差し替えて再レンダーする */
-    const rerenderWithTask = (nextTask: AppTask, tempIdRenames: ReadonlyMap<string, string> = overrides.tempIdRenames ?? new Map()): void => {
-        view.rerender(<DetailPane ref={ref} task={nextTask} allTasks={[nextTask]} dependencies={overrides.dependencies ?? []} tempIdRenames={tempIdRenames} {...handlers} />);
+    const rerenderWithTask = (nextTask: AppTask): void => {
+        view.rerender(<DetailPane ref={ref} task={nextTask} allTasks={[nextTask]} dependencies={overrides.dependencies ?? []} {...handlers} />);
     };
     return { ...handlers, ref, rerenderWithTask };
 };
@@ -200,18 +191,7 @@ describe("DetailPaneHandle.focusEditor", () => {
     });
 
     it("タスク未選択のときは何も起きない", () => {
-        render(
-            <DetailPane
-                task={null}
-                allTasks={[]}
-                dependencies={[]}
-                tempIdRenames={new Map()}
-                onEscapeToOutline={vi.fn()}
-                onCommitTitle={vi.fn()}
-                onCommitDescription={vi.fn()}
-                onCommitDueDate={vi.fn()}
-            />,
-        );
+        render(<DetailPane task={null} allTasks={[]} dependencies={[]} onEscapeToOutline={vi.fn()} onCommitTitle={vi.fn()} onCommitDescription={vi.fn()} onCommitDueDate={vi.fn()} />);
         expect(screen.getByText("タスクを選択してください")).toBeTruthy();
     });
 });
@@ -261,16 +241,6 @@ describe("タスクの切り替え", () => {
         rerenderWithTask(task({ id: "task-2", title: "次のタスク", description: "次の説明" }));
         expect(screen.queryByRole("textbox")).toBeNull();
         expect(screen.getByText("次の説明")).toBeTruthy();
-    });
-
-    it("tempId → 実id の付け替えでは編集中の下書きを保つ", () => {
-        const tempTask = task({ id: "temp-1", title: "新規タスク" });
-        const { rerenderWithTask } = renderPane({ task: tempTask });
-        startEditing(2);
-        fireEvent.change(screen.getByRole("textbox"), { target: { value: "保たれる下書き" } });
-        rerenderWithTask(task({ id: "real-1", title: "新規タスク" }), new Map([["temp-1", "real-1"]]));
-        const textarea = screen.getByRole("textbox");
-        expect((textarea as HTMLTextAreaElement).value).toBe("保たれる下書き");
     });
 
     it("別のタスクへ切り替わると依存先の選択とエラー表示も初期化する", async () => {

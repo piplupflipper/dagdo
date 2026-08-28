@@ -10,6 +10,8 @@ import { createAppClient } from "@/lib/supabase/app-client";
  * タスクを作成する (req.md §59, §60)
  *
  * user_id はクライアント入力から受け取らず、auth() で検証済みのセッションから取得する (req.md §60)。
+ * id はクライアントが採番した UUID (crypto.randomUUID()) をそのまま実 PK として INSERT する (Issue #70)。
+ * クライアント側の楽観行とサーバーの行が最初から同じ id になるため、tempId → 実 id の付け替えを要らない。
  * position を指定しない (null) 場合は同一 actual parent の兄弟グループの末尾に採番する。
  * 指定した場合は末尾へ作成したうえで move_task RPC (req.md §54) でその位置へ移す。
  * 挿入位置を空けるための兄弟の position 更新を自前の複数 UPDATE に分けず、
@@ -20,7 +22,7 @@ import { createAppClient } from "@/lib/supabase/app-client";
  * ここは DB 呼び出しが 3 つあり、位置調整の失敗時は revalidate してから失敗を返し、
  * 成功時は作成した id を返すため、前提のいずれも満たさない
  */
-export const createTask = async ({ title, parentId, position }: { title: string; parentId: string | null; position: number | null }): Promise<ActionResult<{ id: string }>> => {
+export const createTask = async ({ id, title, parentId, position }: { id: string; title: string; parentId: string | null; position: number | null }): Promise<ActionResult<{ id: string }>> => {
     const userId = await getSessionUserId();
     const client = await createAppClient({ userId });
 
@@ -34,7 +36,7 @@ export const createTask = async ({ title, parentId, position }: { title: string;
 
     const { data, error } = await client
         .from("tasks")
-        .insert({ title, parent_id: parentId, user_id: userId, position: count ?? 0 })
+        .insert({ id, title, parent_id: parentId, user_id: userId, position: count ?? 0 })
         .select("id")
         .single();
 

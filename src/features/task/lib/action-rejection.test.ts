@@ -18,7 +18,7 @@ describe("toActionRejection", () => {
     it("版ずれを表す Error から再読み込みを促す文言を組み立てる", () => {
         // Next.js 16.3.0 のサーバー側 (action-handler.js) が MPA action で throw する文言
         const reason = new Error("Failed to find Server Action. This request might be from an older or newer deployment.\nRead more: https://nextjs.org/docs/messages/failed-to-find-server-action");
-        expect(toActionRejection(reason)).toEqual({ ok: false, rejected: true, message: STALE_DEPLOYMENT_MESSAGE });
+        expect(toActionRejection(reason)).toEqual({ ok: false, rejected: true, message: STALE_DEPLOYMENT_MESSAGE, isVersionSkew: true });
     });
 
     it("fetch action の版ずれは message のマーカー (文書 URL) でも判別する", () => {
@@ -46,6 +46,11 @@ describe("toActionRejection", () => {
         const rejection = toActionRejection(new Error("boom"));
         expect(rejection.ok).toBe(false);
         expect(rejection).not.toHaveProperty("code");
+    });
+
+    it("isVersionSkew は版ずれのときだけ true になる (Op キューの flusher が停止とリトライを分岐する材料)", () => {
+        expect(toActionRejection(new Error("Failed to find Server Action")).isVersionSkew).toBe(true);
+        expect(toActionRejection(new TypeError("Failed to fetch")).isVersionSkew).toBe(false);
     });
 });
 
