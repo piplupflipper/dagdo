@@ -100,6 +100,7 @@ describe("初期表示", () => {
         expect(screen.getByRole("listbox", { name: "タスク一覧" })).toBeTruthy();
         expect(screen.getByText("最初のタスク")).toBeTruthy();
         expect(screen.getByRole("button", { name: "+ 新規タスク" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Markdown コピー" })).toBeTruthy();
     });
 });
 
@@ -119,6 +120,18 @@ describe("ヘッダのボタン", () => {
         expect(Array.from(useOutlineStore.getState().visualSelectedTaskIds)).toEqual(["task-1"]);
         fireEvent.click(visualButton);
         expect(useOutlineStore.getState().mode).toBe("NORMAL");
+    });
+
+    it("Markdown コピーは全件をクリップボードへ書き、件数をステータス行へ出す", async () => {
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, "clipboard", {
+            configurable: true,
+            value: { writeText },
+        });
+        renderShell();
+        fireEvent.click(screen.getByRole("button", { name: "Markdown コピー" }));
+        await waitFor(() => expect(writeText).toHaveBeenCalledWith("- 最初のタスク\n- 次のタスク"));
+        expect(await screen.findByText("2 件をコピーしました")).toBeTruthy();
     });
 });
 
