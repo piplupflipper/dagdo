@@ -208,6 +208,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         handleReparent,
         undo,
         redo,
+        repeatLastChange,
     } = useOutlineMutations({ userId, tasks, tasksById, dependencies, cursorTask, applyOp, setInlineTitleEdit });
 
     /**
@@ -288,6 +289,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
             indentCursor,
             outdentCursor,
             softDeleteCursor,
+            repeatLastChange,
             undo,
             redo,
             openHelp: () => setIsHelpOpen(true),
