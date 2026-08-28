@@ -8,7 +8,7 @@ import { OutlinePane } from "@/features/outline/components/outline-pane";
 import { PaneDivider } from "@/features/outline/components/pane-divider";
 import { StatusLine } from "@/features/outline/components/status-line";
 import { useOutlineKeymap } from "@/features/outline/hooks/use-outline-keymap";
-import { useOutlineMutations } from "@/features/outline/hooks/use-outline-mutations";
+import { type OutlinePersistence, useOutlineMutations } from "@/features/outline/hooks/use-outline-mutations";
 import { buildOutlineTree, collectCollapsibleTaskIds, deriveVisibleRows } from "@/features/outline/lib/build-tree";
 import { findSiblingTaskId } from "@/features/outline/lib/flatten-for-dnd";
 import type { InlineTitleCaret, InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
@@ -33,6 +33,14 @@ type OutlineShellProps = {
     userId: string;
     initialTasks: AppTask[];
     initialDependencies: TaskDependency[];
+    /**
+     * 永続化アダプタの注入口 (オフラインモード、Issue #81)
+     *
+     * 省略時 (オンライン) は直列 Op キューが永続化を担う。/offline だけが localStorage 保存の
+     * アダプタを渡し、オンライン/オフラインの分岐はこの props の有無 1 箇所から導く
+     * (依存関係の節・ゴミ箱への導線・ログアウトの出し分けも、ここから導いた真偽値を props で配るだけ)
+     */
+    persistence?: OutlinePersistence;
 };
 
 /**
@@ -48,10 +56,13 @@ type OutlineShellProps = {
  * (ヘルプの開閉・行内タイトル編集・ペイン比率) とカーソル移動だけである。
  * タスクを書き換える操作は `useOutlineMutations` が持つ
  */
-export const OutlineShell = ({ userId, initialTasks, initialDependencies }: OutlineShellProps): JSX.Element => {
+export const OutlineShell = ({ userId, initialTasks, initialDependencies, persistence }: OutlineShellProps): JSX.Element => {
     /** クライアント正のタスク一覧と依存関係。初回マウント時に props から取り込み、以後は reconcile ゲートが更新する */
     const [tasks, setTasks] = useState<AppTask[]>(initialTasks);
     const [dependencies, setDependencies] = useState<TaskDependency[]>(initialDependencies);
+
+    /** オフラインモードか (Issue #81)。永続化アダプタの注入有無だけから導き、他の判定材料を持たない */
+    const isOfflineMode = persistence !== undefined;
 
     /** 1 Op をクライアント正 state へ同期適用する (`useOutlineMutations` のパイプラインが呼ぶ) */
     const applyOp = (op: OutlineOp): void => {
@@ -210,7 +221,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         undo,
         redo,
         repeatLastChange,
-    } = useOutlineMutations({ userId, tasks, tasksById, dependencies, cursorTask, applyOp, setInlineTitleEdit });
+    } = useOutlineMutations({ userId, tasks, tasksById, dependencies, cursorTask, applyOp, setInlineTitleEdit, persistence });
 
     /**
      * reconcile ゲート (Issue #70)
@@ -348,6 +359,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                         infoMessage={statusMessage}
                         errorMessage={statusError}
                         pendingCount={pendingCount}
+                        isOfflineMode={isOfflineMode}
                     />
                 </div>
                 {/* dnd-kit の DndContext (行の並べ替え、OutlinePane 内) の外に置き、行 dnd とポインタ操作を競合させない */}
@@ -358,6 +370,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                         task={cursorTask}
                         allTasks={tasks}
                         dependencies={dependencies}
+                        showDependencySection={!isOfflineMode}
                         onEscapeToOutline={focusOutlineList}
                         onCommitTitle={commitInlineTitleEdit}
                         onCommitDescription={commitDescriptionEdit}
@@ -371,6 +384,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                 task={cursorTask}
                 allTasks={tasks}
                 dependencies={dependencies}
+                showDependencySection={!isOfflineMode}
                 flashTaskId={flashTaskId}
                 isInert={isHelpOpen}
                 onClose={() => setCursor(null)}

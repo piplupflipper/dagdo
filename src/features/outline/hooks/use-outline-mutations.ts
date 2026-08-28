@@ -24,6 +24,22 @@ import type { TaskErrorCode } from "@/features/task/lib/action-result";
 import { useOutlineStore } from "@/store/outline-store";
 import type { AppTask, TaskDependency } from "@/types/task";
 
+/**
+ * 永続化アダプタ (Issue #81)
+ *
+ * オンライン (既定) は直列 Op キューへの enqueue、オフライン (/offline) は適用後 state の
+ * localStorage スナップショット保存が実体になる。差し替わるのは永続化だけであり、
+ * validate → invert → apply → persist → 履歴 push のパイプラインは両モードで共通である
+ */
+export type OutlinePersistence = {
+    /** apply 済み Op の永続化。tasksSnapshot は適用前の一覧 (オンラインは `reorder` の再構成、オフラインは適用後 state の再計算に使う) */
+    persist: (op: OutlineOp, tasksSnapshot: AppTask[]) => void;
+    /** 未同期件数 (送信中含む)。reconcile ゲート (`OutlineShell`) が 0 のときだけ props を採用する。オフラインは常に 0 */
+    pendingCount: number;
+    /** 版ずれ停止 (オフラインは常に false)。停止中は成功操作でも版ずれのエラー表示を消さない */
+    isStopped: boolean;
+};
+
 type UseOutlineMutationsArgs = {
     userId: string;
     /** クライアント正のタスク一覧 (`OutlineShell` の state)。逆操作の材料と `reorder` の再構成にそのまま使う */
@@ -36,6 +52,13 @@ type UseOutlineMutationsArgs = {
     applyOp: (op: OutlineOp) => void;
     /** 行内タイトル編集の state。`commitInlineTitleEdit` が畳む */
     setInlineTitleEdit: Dispatch<SetStateAction<InlineTitleEdit | null>>;
+    /**
+     * 永続化アダプタの注入口 (オフラインモード、Issue #81)
+     *
+     * 省略時 (オンライン) は直列 Op キューを包んだアダプタを内部で組む。
+     * オンライン/オフラインの分岐はこの props の有無 1 箇所だけで行う
+     */
+    persistence?: OutlinePersistence;
 };
 
 /** データを書き換える操作の一式 (StatusLine へ出す 2 つのメッセージと、Op キューの未同期件数を含む) */
@@ -100,15 +123,17 @@ const formatValidationError = (code: TaskErrorCode): string => formatTaskError(c
 /**
  * タスクを書き換える操作をまとめたフック (docs/frontend-design.md §5.2、Issue #70)
  *
- * 「validate → invert → apply (同期 setState) → enqueue → 履歴 push」という 1 本の同期パイプライン (`runOp`) と、
- * そこへ Op を流すだけの各ハンドラで構成する。永続化は背後の直列 Op キュー (use-op-queue.ts) が担い、
- * Server Action の応答をここでは待たない (write-behind)。ステータス行の 2 つのメッセージと undo/redo の履歴は
+ * 「validate → invert → apply (同期 setState) → persist → 履歴 push」という 1 本の同期パイプライン (`runOp`) と、
+ * そこへ Op を流すだけの各ハンドラで構成する。永続化は `OutlinePersistence` アダプタが担い、
+ * 既定 (オンライン) は背後の直列 Op キュー (use-op-queue.ts) への enqueue、オフライン (Issue #81) は
+ * props 注入された localStorage 保存になる。オンラインでも Server Action の応答をここでは待たない
+ * (write-behind)。ステータス行の 2 つのメッセージと undo/redo の履歴は
  * このパイプラインの内部事情なので、ここで持って外へは結果だけを返す。
  *
  * カーソルや VISUAL の選択範囲といったストアの状態は、`OutlineShell` から渡さず selector で直接購読する
  * (同じレンダーで同じ値を見るため二重管理にはならない)
  */
-export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cursorTask, applyOp, setInlineTitleEdit }: UseOutlineMutationsArgs): OutlineMutations => {
+export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cursorTask, applyOp, setInlineTitleEdit, persistence }: UseOutlineMutationsArgs): OutlineMutations => {
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
     const [statusError, setStatusError] = useState<string | null>(null);
     /** undo (`u`) / redo (`U`) の履歴スタック (docs/frontend-design.md §5.2) */
@@ -141,11 +166,25 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         onDrained: () => router.refresh(),
     });
 
+    /**
+     * 有効な永続化アダプタ (Issue #81)
+     *
+     * props 注入 (オフライン) が無ければ、直列 Op キューを包んだオンライン用アダプタを組む。
+     * オフラインでは Op キューへの enqueue・Server Action の送信・reconcile の refresh は一切起きない
+     * (`useOpQueue` の呼び出し自体は rules of hooks 上残るが、enqueue しない限り購読以外の何もしない)
+     */
+    const activePersistence: OutlinePersistence = persistence ?? {
+        persist: (op: OutlineOp, tasksSnapshot: AppTask[]): void => opQueue.enqueue(op, tasksSnapshot),
+        pendingCount: opQueue.pendingCount,
+        isStopped: opQueue.isStopped,
+    };
+
     // reconcile トリガの残る 1 つ: visibilitychange で visible へ復帰したとき (SPEC §6)。
     // 別タブ・別デバイスでの変更を取り込む口であり、キューに未同期の Op がある間は打たない
-    // (打っても reconcile ゲートが無視するが、無駄な再取得を避ける)
+    // (打っても reconcile ゲートが無視するが、無駄な再取得を避ける)。
+    // オフラインモード (persistence 注入時) はサーバーの現況が存在しないため、リスナ自体を登録しない
     useEffect(() => {
-        if (opQueue.pendingCount > 0) {
+        if (persistence !== undefined || opQueue.pendingCount > 0) {
             return;
         }
         const handleVisibilityChange = (): void => {
@@ -157,7 +196,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         return () => {
             document.removeEventListener("visibilitychange", handleVisibilityChange);
         };
-    }, [opQueue.pendingCount, router]);
+    }, [persistence, opQueue.pendingCount, router]);
 
     const cursorTaskId = useOutlineStore((state) => state.cursorTaskId);
     const visualSelectedTaskIds = useOutlineStore((state) => state.visualSelectedTaskIds);
@@ -167,7 +206,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
 
     /** 成功した操作でステータス行のエラーを消す。ただし版ずれ停止の文言 (再読み込みの導線) は消さない */
     const clearStatusError = (): void => {
-        if (!opQueue.isStopped) {
+        if (!activePersistence.isStopped) {
             setStatusError(null);
         }
     };
@@ -211,7 +250,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
             return false;
         }
         applyOp(op);
-        opQueue.enqueue(op, tasksSnapshot);
+        activePersistence.persist(op, tasksSnapshot);
         clearStatusError();
         pushHistory(label, undoOps, [op]);
         return true;
@@ -280,7 +319,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
             const tasksSnapshot = currentTasks;
             currentTasks = applyOutlineOp(currentTasks, dependencies, op, { fallbackUserId: userId });
             applyOp(op);
-            opQueue.enqueue(op, [...tasksSnapshot]);
+            activePersistence.persist(op, [...tasksSnapshot]);
             succeededTaskIds.push(taskId);
         }
         setStatusMessage(`${taskIds.length}件中${succeededTaskIds.length}件を完了`);
@@ -346,7 +385,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         }
         const snapshot = applyOutlineOp(tasks, dependencies, op, { fallbackUserId: userId }).find((task) => task.id === op.id);
         applyOp(op);
-        opQueue.enqueue(op, tasks);
+        activePersistence.persist(op, tasks);
         setCursor(op.id);
         clearStatusError();
         if (snapshot !== undefined) {
@@ -526,7 +565,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
             const tasksSnapshot = currentTasks;
             currentTasks = applyOutlineOp(currentTasks, dependencies, op, { fallbackUserId: userId });
             applyOp(op);
-            opQueue.enqueue(op, [...tasksSnapshot]);
+            activePersistence.persist(op, [...tasksSnapshot]);
         }
         clearStatusError();
         return true;
@@ -575,7 +614,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
     return {
         statusMessage,
         statusError,
-        pendingCount: opQueue.pendingCount,
+        pendingCount: activePersistence.pendingCount,
         handleToggleDone,
         completeCursor,
         completeSelection,

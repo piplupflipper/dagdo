@@ -22,6 +22,13 @@ export type DetailPaneProps = {
     allTasks: AppTask[];
     dependencies: TaskDependency[];
     /**
+     * 依存関係の節 (`DependencySection`) を描画するか。既定は true
+     *
+     * オフラインモード (Issue #81) だけ false が渡され、依存の追加・削除 (Server Action 直呼び) を封じる。
+     * 出し分けの判断は `OutlineShell` が永続化アダプタの注入有無から導き、本コンポーネントは受け取るだけ
+     */
+    showDependencySection?: boolean;
+    /**
      * 編集領域 (タイトル・説明・期日・依存先追加) で `Esc` を押した際、一覧へフォーカスを戻す共通ヘルパー
      *
      * `OutlineShell` が持つ 1 個の関数を props でそのまま渡す (docs/frontend-design.md §6.1)。
@@ -86,7 +93,17 @@ const STATUS_BADGE_CLASS: Record<TaskStatus, string> = {
  * フォーカスを一覧側へ戻し、document の keydown ハンドラ（`use-outline-keymap.ts`）の `isEditableTarget` 抑止から
  * 抜けて NORMAL の操作へ復帰する (docs/frontend-design.md §6.1)
  */
-export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, onCommitTitle, onCommitDescription, onCommitDueDate, ref }: DetailPaneProps): JSX.Element => {
+export const DetailPane = ({
+    task,
+    allTasks,
+    dependencies,
+    showDependencySection = true,
+    onEscapeToOutline,
+    onCommitTitle,
+    onCommitDescription,
+    onCommitDueDate,
+    ref,
+}: DetailPaneProps): JSX.Element => {
     // タスク切替時にのみ編集状態をリセットする (レンダー中の state 調整。React 公式の推奨パターンであり
     // useEffect による同期を避けることで useOutlineKeymap 側と同様に「必要な処理だけを行う」構成にする)
     const [lastTaskId, setLastTaskId] = useState<string | null>(task?.id ?? null);
@@ -136,7 +153,7 @@ export const DetailPane = ({ task, allTasks, dependencies, onEscapeToOutline, on
 
             {task.completed_at !== null ? <div className="mb-1.5 text-xs text-text-dim">完了日時: {formatDateTime(task.completed_at)}</div> : null}
 
-            <DependencySection task={task} allTasks={allTasks} dependencies={dependencies} resetToken={resetToken} onEscapeToOutline={onEscapeToOutline} />
+            {showDependencySection ? <DependencySection task={task} allTasks={allTasks} dependencies={dependencies} resetToken={resetToken} onEscapeToOutline={onEscapeToOutline} /> : null}
 
             <DescriptionField key={`description-${resetToken}`} ref={descriptionFieldRef} task={task} onCommitDescription={onCommitDescription} onEscapeToOutline={onEscapeToOutline} />
         </div>
