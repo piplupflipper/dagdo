@@ -85,6 +85,8 @@ const MAX_DEVICE_PIXEL_RATIO = 1.25;
 const MAX_RENDER_DIMENSION = 1600;
 const MAX_RENDER_PIXELS = 1_500_000;
 const FRAME_INTERVAL = 1000 / 30;
+/** 雲ドリフトの見かけ速度。シェーダー内の time 係数は変えず、ここだけを調整する */
+const ANIMATION_TIME_SCALE = 1.5;
 
 type ShaderLocations = {
     position: number;
@@ -390,7 +392,7 @@ export class NightSkyRenderer {
         }
         const elapsed = timestamp - this.previousFrameTime;
         if (elapsed >= FRAME_INTERVAL) {
-            this.animationTime += Math.min(elapsed, 100) / 1000;
+            this.animationTime += (Math.min(elapsed, 100) / 1000) * ANIMATION_TIME_SCALE;
             this.previousFrameTime = timestamp - (elapsed % FRAME_INTERVAL);
             this.drawFrame();
         }
