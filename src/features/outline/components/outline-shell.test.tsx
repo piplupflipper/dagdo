@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OutlineShell } from "@/features/outline/components/outline-shell";
 import { resetOpQueueForTesting } from "@/features/outline/hooks/use-op-queue";
@@ -256,6 +256,77 @@ describe("事前バリデーション", () => {
         expect(await screen.findByText("1件中0件を完了")).toBeTruthy();
         expect(callServerForOpMock).not.toHaveBeenCalled();
         consoleError.mockRestore();
+    });
+});
+
+/**
+ * ドットリピート (Issue #74)
+ *
+ * 記述子とハンドラの対応は `repeat-command.test.ts`、記録対象のキーは `keymap-table.test.ts` が固定しているので、
+ * ここでは「キー → 記録 → `.` による再発行」が実際の一覧の上で通ることと、レジスタの上書き規則
+ * (弾かれた操作は上書きしない・空なら no-op) を通しで見る
+ */
+describe("ドットリピート", () => {
+    /** 一覧に描かれた行の taskId を表示順で取り出す */
+    const rowOrder = (): string[] => Array.from(document.querySelectorAll("[data-task-id]")).map((row) => row.getAttribute("data-task-id") ?? "");
+
+    /** 3 行のフラットな一覧。`J` の繰り返しで並びの変化を追うために使う */
+    const threeTasks: AppTask[] = [
+        task({ id: "task-1", title: "一番目", sortPath: [0] }),
+        task({ id: "task-2", title: "二番目", sortPath: [1] }),
+        task({ id: "task-3", title: "三番目", sortPath: [2] }),
+    ];
+
+    it("`x` の後に `j` で移動して `.` を押すと、移動先の行が complete される", async () => {
+        renderShell();
+        fireEvent.click(screen.getByText("最初のタスク"));
+        fireEvent.keyDown(document, { key: "x" });
+        fireEvent.keyDown(document, { key: "j" });
+        fireEvent.keyDown(document, { key: "." });
+
+        await waitFor(() => expect(callServerForOpMock).toHaveBeenCalledWith({ type: "complete", taskId: "task-2" }, expect.anything()));
+        // 両方の行が完了として描かれている
+        expect(screen.getAllByRole("button", { name: "完了を切替" }).map((toggle) => toggle.textContent)).toEqual(["✓", "✓"]);
+    });
+
+    it("`J` の後の `.` はもう 1 つ下へ動かす (direction が保たれる)", () => {
+        render(<OutlineShell userId="user-1" initialTasks={threeTasks} initialDependencies={[]} />);
+        fireEvent.click(screen.getByText("一番目"));
+        fireEvent.keyDown(document, { key: "J" });
+        expect(rowOrder()).toEqual(["task-2", "task-1", "task-3"]);
+
+        fireEvent.keyDown(document, { key: "." });
+        expect(rowOrder()).toEqual(["task-2", "task-3", "task-1"]);
+    });
+
+    it("バリデーションで弾かれた操作 (blocked 行への `x`) はレジスタを上書きしない", async () => {
+        // task-1 は未完了の task-3 に依存しており、complete が事前バリデーションで弾かれる
+        const blockedDependency: TaskDependency = { user_id: "user-1", task_id: "task-1", depends_on_task_id: "task-3", created_at: "2026-08-13T00:00:00.000Z" };
+        render(<OutlineShell userId="user-1" initialTasks={threeTasks} initialDependencies={[blockedDependency]} />);
+
+        // `J` で reorder を記録した後、blocked 行への `x` が弾かれる
+        fireEvent.click(screen.getByText("二番目"));
+        fireEvent.keyDown(document, { key: "J" });
+        expect(rowOrder()).toEqual(["task-1", "task-3", "task-2"]);
+        // カーソル選択後はタイトルが詳細ペイン側にも現れるため、一覧 (listbox) の中の行を押す
+        fireEvent.click(within(screen.getByRole("listbox", { name: "タスク一覧" })).getByText("一番目"));
+        fireEvent.keyDown(document, { key: "x" });
+        expect(await screen.findByText("TASK_BLOCKED — 三番目 が未完了のため完了できません")).toBeTruthy();
+
+        // `.` は弾かれた complete ではなく、記録済みの reorder (下へ) を再発行する
+        fireEvent.keyDown(document, { key: "." });
+        expect(rowOrder()).toEqual(["task-3", "task-1", "task-2"]);
+        expect(callServerForOpMock).not.toHaveBeenCalledWith({ type: "complete", taskId: "task-1" }, expect.anything());
+    });
+
+    it("レジスタが空のときの `.` は no-op", async () => {
+        renderShell();
+        fireEvent.click(screen.getByText("最初のタスク"));
+        fireEvent.keyDown(document, { key: "." });
+
+        await act(async () => {});
+        expect(callServerForOpMock).not.toHaveBeenCalled();
+        expect(rowOrder()).toEqual(["task-1", "task-2"]);
     });
 });
 

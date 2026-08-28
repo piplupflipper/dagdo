@@ -15,6 +15,7 @@ import {
 import type { InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
 import { invertOutlineOp } from "@/features/outline/lib/invert-op";
 import { applyOutlineOp, type OutlineOp } from "@/features/outline/lib/outline-ops";
+import { dispatchRepeatCommand, type RepeatableCommand } from "@/features/outline/lib/repeat-command";
 import { EMPTY_UNDO_HISTORY, popRedoEntry, popUndoEntry, pushToRedo, pushToUndo, recordEntry, type UndoHistoryState } from "@/features/outline/lib/undo-history";
 import { validateOutlineOp } from "@/features/outline/lib/validate-op";
 import type { TaskErrorCode } from "@/features/task/lib/action-result";
@@ -73,6 +74,8 @@ type OutlineMutations = {
     undo: () => void;
     /** `U` */
     redo: () => void;
+    /** `.`。直前の変更をカーソル行へ再発行する (Issue #74) */
+    repeatLastChange: () => void;
 };
 
 /**
@@ -106,6 +109,14 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
     const [statusError, setStatusError] = useState<string | null>(null);
     /** undo (`u`) / redo (`U`) の履歴スタック (docs/frontend-design.md §5.2) */
     const [undoHistory, setUndoHistory] = useState<UndoHistoryState>(EMPTY_UNDO_HISTORY);
+    /**
+     * ドットリピート (`.`) のレジスタ (直近 1 件、非永続、Issue #74)
+     *
+     * 記録するのは「事前バリデーションを通過して apply された変更」だけであり、弾かれた操作や no-op は上書きしない。
+     * 書き込むのはキー由来の 5 ハンドラ (completeCursor / softDeleteCursor / moveCursorSibling / indentCursor /
+     * outdentCursor) のみで、チェックボックスクリック・dnd・VISUAL 一括完了・undo/redo は記録しない
+     */
+    const [repeatRegister, setRepeatRegister] = useState<RepeatableCommand | null>(null);
 
     const router = useRouter();
 
@@ -179,29 +190,33 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
      * (lib/invert-op.ts) が Op と実行前のスナップショットから組み立てる。逆操作を組み立てられない Op
      * (対象行が手元に無い、`create` / `restore`) は履歴を積めないため何もしない
      * (呼び出し側が逆操作の材料の有無を先に確かめており、現状この分岐へ到達する呼び出しは無い)
+     *
+     * @returns apply まで到達したら true。逆操作を組み立てられなかった場合とバリデーション失敗は false。
+     * ドットリピート (`.`) のレジスタが「apply された変更」だけを記録するための通知口である (Issue #74)
      */
-    const runOp = (op: OutlineOp, label: string, onValidationError?: (code: TaskErrorCode) => string | undefined): void => {
+    const runOp = (op: OutlineOp, label: string, onValidationError?: (code: TaskErrorCode) => string | undefined): boolean => {
         // 逆操作の材料も `reorder` の `orderedTaskIds` の再構成も、適用前の一覧から取る
         const tasksSnapshot = tasks;
         const undoOps = invertOutlineOp(op, tasksSnapshot);
         if (undoOps === null) {
-            return;
+            return false;
         }
         const validation = validateOutlineOp(op, tasksSnapshot, dependencies);
         if (!validation.ok) {
             setStatusError(onValidationError?.(validation.code) ?? formatValidationError(validation.code));
-            return;
+            return false;
         }
         applyOp(op);
         opQueue.enqueue(op, tasksSnapshot);
         clearStatusError();
         pushHistory(label, undoOps, [op]);
+        return true;
     };
 
-    const runComplete = (taskId: string): void => {
+    const runComplete = (taskId: string): boolean => {
         // 依存先が未完了で弾かれた場合だけ、既定の英語 message ではなく原因タスク名を含む文言を出し、
         // その原因タスクを DAG パネルで点滅させる (findBlockingCause は手元の依存関係から原因を 1 件だけ求める)
-        runOp({ type: "complete", taskId }, "完了", (code) => {
+        return runOp({ type: "complete", taskId }, "完了", (code) => {
             if (code !== "TASK_BLOCKED") {
                 return undefined;
             }
@@ -221,11 +236,18 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         runComplete(task.id);
     };
 
-    const completeCursor = (): void => {
+    /** completeCursor のレジスタへ記録しない内部版。`.` の再発行 (repeatLastChange) と共有する */
+    const executeCompleteCursor = (): boolean => {
         if (cursorTask === null || cursorTask.completed_at !== null) {
-            return;
+            return false;
         }
-        runComplete(cursorTask.id);
+        return runComplete(cursorTask.id);
+    };
+
+    const completeCursor = (): void => {
+        if (executeCompleteCursor()) {
+            setRepeatRegister({ kind: "complete" });
+        }
     };
 
     /**
@@ -339,44 +361,65 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         runOp({ type: "updateDueDate", taskId, dueDate }, "期日変更");
     };
 
-    /** `J`/`K`。同一階層で 1 つ下/上へ (`reorder` Op)。逆操作は移動前の rank へ戻す `reorder` */
-    const moveCursorSibling = (direction: "up" | "down"): void => {
+    /** moveCursorSibling のレジスタへ記録しない内部版。`.` の再発行 (repeatLastChange) と共有する */
+    const executeMoveCursorSibling = (direction: "up" | "down"): boolean => {
         if (cursorTaskId === null) {
-            return;
+            return false;
         }
         const taskId = cursorTaskId;
         const result: SiblingReorderResult | null = computeSiblingSwap({ tasks, taskId, direction });
         if (result === null) {
-            return;
+            return false;
         }
         // `reorder` Op が持つのは兄弟内の rank だけである。Server Action へ渡す `orderedTaskIds` は
         // キューの flusher が同じ rank から再構成する (outline-ops.ts の resolveReorderedSiblingIds)
         const newRank = result.orderedTaskIds.indexOf(taskId);
-        runOp({ type: "reorder", taskId, newPosition: newRank }, direction === "down" ? "下へ移動" : "上へ移動");
+        return runOp({ type: "reorder", taskId, newPosition: newRank }, direction === "down" ? "下へ移動" : "上へ移動");
     };
 
-    const indentCursor = (): void => {
+    /** `J`/`K`。同一階層で 1 つ下/上へ (`reorder` Op)。逆操作は移動前の rank へ戻す `reorder` */
+    const moveCursorSibling = (direction: "up" | "down"): void => {
+        if (executeMoveCursorSibling(direction)) {
+            setRepeatRegister({ kind: "reorder", direction });
+        }
+    };
+
+    /** indentCursor のレジスタへ記録しない内部版。`.` の再発行 (repeatLastChange) と共有する */
+    const executeIndentCursor = (): boolean => {
         if (cursorTaskId === null) {
-            return;
+            return false;
         }
         const taskId = cursorTaskId;
         const result: ReparentResult | null = computeIndent({ tasks, taskId });
         if (result === null) {
-            return;
+            return false;
         }
-        runOp({ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition }, "インデント");
+        return runOp({ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition }, "インデント");
     };
 
-    const outdentCursor = (): void => {
+    const indentCursor = (): void => {
+        if (executeIndentCursor()) {
+            setRepeatRegister({ kind: "indent" });
+        }
+    };
+
+    /** outdentCursor のレジスタへ記録しない内部版。`.` の再発行 (repeatLastChange) と共有する */
+    const executeOutdentCursor = (): boolean => {
         if (cursorTaskId === null) {
-            return;
+            return false;
         }
         const taskId = cursorTaskId;
         const result: ReparentResult | null = computeOutdent({ tasks, taskId });
         if (result === null) {
-            return;
+            return false;
         }
-        runOp({ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition }, "アウトデント");
+        return runOp({ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition }, "アウトデント");
+    };
+
+    const outdentCursor = (): void => {
+        if (executeOutdentCursor()) {
+            setRepeatRegister({ kind: "outdent" });
+        }
     };
 
     /**
@@ -394,12 +437,21 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
      * 続く move_task の後の兄弟の position はクライアント適用側と一致する
      * (supabase/tests/011_position_gaps.test.sql のケース8 と outline-ops.test.ts が両側を固定する)
      * (この 2 Op 列の組み立ては lib/invert-op.ts の `softDelete` 分岐が持つ)
+     *
+     * これはレジスタへ記録しない内部版であり、`.` の再発行 (repeatLastChange) と共有する
      */
-    const softDeleteCursor = (): void => {
+    const executeSoftDeleteCursor = (): boolean => {
         if (cursorTaskId === null) {
-            return;
+            return false;
         }
-        runOp({ type: "softDelete", taskId: cursorTaskId }, "ゴミ箱へ移動");
+        return runOp({ type: "softDelete", taskId: cursorTaskId }, "ゴミ箱へ移動");
+    };
+
+    /** `dd` */
+    const softDeleteCursor = (): void => {
+        if (executeSoftDeleteCursor()) {
+            setRepeatRegister({ kind: "softDelete" });
+        }
     };
 
     /** dnd-kit のドロップ確定 (同一 actual parent 内)。キーボード代替の `moveCursorSibling` と同じ `reorder` Op を使う */
@@ -456,6 +508,26 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         setUndoHistory(allOk ? pushToUndo(popped.rest, popped.entry) : popped.rest);
     };
 
+    /**
+     * `.`。レジスタの記述子を現在のカーソル行へ再発行する (Issue #74)。レジスタが空なら何もしない
+     *
+     * 渡すのはレジスタへ記録しない内部版 (execute 系) のハンドラ群であり、`.` 自身はレジスタを書き換えない
+     * (連打で同じ変更を繰り返せる)。再発行は通常パイプライン (runOp) を素通しするため、
+     * バリデーションで弾かれればステータス行へエラーが出て、成功すれば undo 履歴へ 1 エントリ積まれる
+     */
+    const repeatLastChange = (): void => {
+        if (repeatRegister === null) {
+            return;
+        }
+        dispatchRepeatCommand(repeatRegister, {
+            completeCursor: executeCompleteCursor,
+            softDeleteCursor: executeSoftDeleteCursor,
+            moveCursorSibling: executeMoveCursorSibling,
+            indentCursor: executeIndentCursor,
+            outdentCursor: executeOutdentCursor,
+        });
+    };
+
     return {
         statusMessage,
         statusError,
@@ -475,5 +547,6 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         handleReparent,
         undo,
         redo,
+        repeatLastChange,
     };
 };

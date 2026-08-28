@@ -43,6 +43,8 @@ export type OutlineKeymapHandlers = {
     outdentCursor: () => void;
     /** `dd`。ゴミ箱へ softDeleteTask する */
     softDeleteCursor: () => void;
+    /** `.`。直前の変更 (x/dd/J/K/</> のうち apply されたもの) をカーソル行へ再発行する (Issue #74) */
+    repeatLastChange: () => void;
     /** `u`。undo スタックの末尾を実行する (docs/frontend-design.md §5.2) */
     undo: () => void;
     /** `U`。redo スタックの末尾を実行する (docs/frontend-design.md §5.2) */
@@ -120,7 +122,9 @@ export const outlineKeymap: readonly KeymapEntry[] = [
     { keys: "O", mode: "NORMAL", category: "編集", description: "カーソル行の上に新規タスクを作成", run: ({ handlers }) => handlers.createSibling("above") },
     { keys: "Enter", mode: "NORMAL", category: "編集", description: "詳細ペインの編集領域へフォーカスを移す", run: ({ handlers }) => handlers.focusDetailEditor() },
     { keys: "d d", mode: "NORMAL", category: "編集", description: "カーソル行をゴミ箱へ移動", run: ({ handlers }) => handlers.softDeleteCursor() },
-    // undo/redo は Server Action が成功で確定した操作のみを対象とする履歴スタックを辿る (docs/frontend-design.md §5.2)。
+    // ドットリピートの記録対象は x/dd/J/K/</> の 5 種のみ (Issue #74)。レジスタの実体は use-outline-mutations.ts が持つ
+    { keys: ".", mode: "NORMAL", category: "編集", description: "直前の変更を繰り返す", run: ({ handlers }) => handlers.repeatLastChange() },
+    // undo/redo はクライアント state へ適用された操作を対象とする履歴スタックを辿る (docs/frontend-design.md §5.2)。
     // `U` は Shift 付きだが key-sequence.ts は Shift を接頭辞にせず event.key へ反映済みの値をそのまま使うため、`u` と衝突しない
     { keys: "u", mode: "NORMAL", category: "編集", description: "undo (直前の確定操作を取り消す)", run: ({ handlers }) => handlers.undo() },
     { keys: "U", mode: "NORMAL", category: "編集", description: "redo (取り消した操作をやり直す)", run: ({ handlers }) => handlers.redo() },
