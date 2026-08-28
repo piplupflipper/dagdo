@@ -1,7 +1,8 @@
-import { type Dispatch, type SetStateAction, useRef, useState, useTransition } from "react";
-import { formatActionError, formatOutcomeError, formatTaskError } from "@/features/outline/lib/action-error";
+import { useRouter } from "next/navigation";
+import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
+import { useOpQueue } from "@/features/outline/hooks/use-op-queue";
+import { formatActionError, formatTaskError } from "@/features/outline/lib/action-error";
 import { findBlockingCause } from "@/features/outline/lib/blocking-cause";
-import { callServerForOp } from "@/features/outline/lib/dispatch-op";
 import {
     computeCreatePosition,
     computeIndent,
@@ -14,37 +15,34 @@ import {
 import type { InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
 import { invertOutlineOp } from "@/features/outline/lib/invert-op";
 import { applyOutlineOp, type OutlineOp } from "@/features/outline/lib/outline-ops";
-import { type PendingCreateRegistry, queuePendingTitle, recordRename, takePendingTitle } from "@/features/outline/lib/pending-create-registry";
 import { EMPTY_UNDO_HISTORY, popRedoEntry, popUndoEntry, pushToRedo, pushToUndo, recordEntry, type UndoHistoryState } from "@/features/outline/lib/undo-history";
-import { completeTask } from "@/features/task/actions/complete-task";
-import { createTask } from "@/features/task/actions/create-task";
-import { updateTask } from "@/features/task/actions/update-task";
-import { isActionRejection } from "@/features/task/lib/action-rejection";
-import type { ActionResult } from "@/features/task/lib/action-result";
-import { runServerAction } from "@/features/task/lib/run-server-action";
+import { validateOutlineOp } from "@/features/outline/lib/validate-op";
+import type { TaskErrorCode } from "@/features/task/lib/action-result";
 import { useOutlineStore } from "@/store/outline-store";
 import type { AppTask, TaskDependency } from "@/types/task";
 
 type UseOutlineMutationsArgs = {
     userId: string;
-    /** 楽観適用後の一覧。逆操作の材料と `reorder` の再構成にそのまま使う */
+    /** クライアント正のタスク一覧 (`OutlineShell` の state)。逆操作の材料と `reorder` の再構成にそのまま使う */
     tasks: AppTask[];
     tasksById: ReadonlyMap<string, AppTask>;
     dependencies: TaskDependency[];
-    /** カーソル行のタスク (`usePendingCreate` が対応表越しに解決したもの) */
+    /** カーソル行のタスク */
     cursorTask: AppTask | null;
-    pendingCreate: PendingCreateRegistry;
-    applyOptimisticAction: (op: OutlineOp) => void;
-    /** 行内タイトル編集の state。`createSibling` の settle と `commitInlineTitleEdit` が書き換える */
+    /** 1 Op をクライアント正 state へ同期適用する (`OutlineShell` の setState) */
+    applyOp: (op: OutlineOp) => void;
+    /** 行内タイトル編集の state。`commitInlineTitleEdit` が畳む */
     setInlineTitleEdit: Dispatch<SetStateAction<InlineTitleEdit | null>>;
 };
 
-/** データを書き換える操作の一式 (StatusLine へ出す 2 つのメッセージを含む) */
+/** データを書き換える操作の一式 (StatusLine へ出す 2 つのメッセージと、Op キューの未同期件数を含む) */
 type OutlineMutations = {
     /** StatusLine の情報表示。現状は VISUAL の一括完了の件数のみ */
     statusMessage: string | null;
-    /** StatusLine のエラー表示。Server Action が失敗するたびに差し替わり、成功で null へ戻る */
+    /** StatusLine のエラー表示。バリデーション失敗・キュー破棄・版ずれ停止で差し替わり、次の成功操作で null へ戻る */
     statusError: string | null;
+    /** Op キューの未同期件数 (送信中含む)。reconcile ゲート (`OutlineShell`) が 0 のときだけ props を採用する */
+    pendingCount: number;
     /** 行のチェックボックス。完了済みなら再オープン、未完了なら完了 */
     handleToggleDone: (task: AppTask) => void;
     /** NORMAL の `x` */
@@ -78,29 +76,73 @@ type OutlineMutations = {
 };
 
 /**
- * タスクを書き換える操作をまとめたフック (docs/frontend-design.md §5.2)
+ * 事前バリデーション失敗をステータス行へ出すときの英語 message (サーバー防波堤の RAISE EXCEPTION の文言に揃える)
  *
- * 「楽観適用 → Server Action → ステータス行 → undo 履歴」という 1 本のパイプライン (`runOp`) と、
- * そこへ Op を流すだけの各ハンドラで構成する。ステータス行の 2 つのメッセージ、undo/redo の履歴、
- * 確定待ちの tempId 集合はいずれもこのパイプラインの内部事情なので、ここで持って外へは結果だけを返す。
+ * validateOutlineOp が返すのはこの 4 種のみ。TASK_BLOCKED は通常 `runComplete` の差し替え口が
+ * 日本語文言に置き換えるため、ここの文言が出るのは差し替え口を通らない undo/redo 経由の場合だけである
+ */
+const VALIDATION_MESSAGES: Partial<Record<TaskErrorCode, string>> = {
+    TASK_BLOCKED: "task has an incomplete, non-deleted dependency",
+    TASK_PARENT_CYCLE: "moving under the new parent would create a cycle",
+    INVALID_PARENT: "parent task not found",
+    INVALID_POSITION: "position is out of range",
+};
+
+const formatValidationError = (code: TaskErrorCode): string => formatTaskError(code, VALIDATION_MESSAGES[code] ?? "rejected by client-side validation");
+
+/**
+ * タスクを書き換える操作をまとめたフック (docs/frontend-design.md §5.2、Issue #70)
+ *
+ * 「validate → invert → apply (同期 setState) → enqueue → 履歴 push」という 1 本の同期パイプライン (`runOp`) と、
+ * そこへ Op を流すだけの各ハンドラで構成する。永続化は背後の直列 Op キュー (use-op-queue.ts) が担い、
+ * Server Action の応答をここでは待たない (write-behind)。ステータス行の 2 つのメッセージと undo/redo の履歴は
+ * このパイプラインの内部事情なので、ここで持って外へは結果だけを返す。
  *
  * カーソルや VISUAL の選択範囲といったストアの状態は、`OutlineShell` から渡さず selector で直接購読する
  * (同じレンダーで同じ値を見るため二重管理にはならない)
  */
-export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cursorTask, pendingCreate, applyOptimisticAction, setInlineTitleEdit }: UseOutlineMutationsArgs): OutlineMutations => {
-    const [, startTransition] = useTransition();
+export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cursorTask, applyOp, setInlineTitleEdit }: UseOutlineMutationsArgs): OutlineMutations => {
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
     const [statusError, setStatusError] = useState<string | null>(null);
     /** undo (`u`) / redo (`U`) の履歴スタック (docs/frontend-design.md §5.2) */
     const [undoHistory, setUndoHistory] = useState<UndoHistoryState>(EMPTY_UNDO_HISTORY);
+
+    const router = useRouter();
+
     /**
-     * `create` で楽観表示している tempId の集合 (Server Action の確定待ち)
+     * 背後の直列 Op キュー
      *
-     * tempId はまだ実 DB に存在しないため、これを対象とする構造操作 (J/K/</>/dd/dnd) や undo/redo は
-     * Server Action へ送っても失敗するだけである。settle (成功・失敗いずれも) で対象を除去する
+     * 版ずれ停止と防波堤ヒット (残キュー破棄) はどちらもステータス行のエラーとして通知する。
+     * reconcile トリガ (SPEC §6): キューが空になった瞬間 (onDrained) と防波堤ヒットで残キューを破棄した直後
+     * (onDiscard) に `router.refresh()` を打つ。届いた props を採用するかは reconcile ゲート
+     * (outline-shell.tsx) が判断する
      */
-    const pendingTempIdsRef = useRef<Set<string>>(new Set());
-    const isPendingTaskId = (taskId: string | null): boolean => taskId !== null && pendingTempIdsRef.current.has(taskId);
+    const opQueue = useOpQueue({
+        onVersionSkew: (message) => setStatusError(message),
+        onDiscard: (failure) => {
+            setStatusError(formatActionError(failure));
+            router.refresh();
+        },
+        onDrained: () => router.refresh(),
+    });
+
+    // reconcile トリガの残る 1 つ: visibilitychange で visible へ復帰したとき (SPEC §6)。
+    // 別タブ・別デバイスでの変更を取り込む口であり、キューに未同期の Op がある間は打たない
+    // (打っても reconcile ゲートが無視するが、無駄な再取得を避ける)
+    useEffect(() => {
+        if (opQueue.pendingCount > 0) {
+            return;
+        }
+        const handleVisibilityChange = (): void => {
+            if (document.visibilityState === "visible") {
+                router.refresh();
+            }
+        };
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+        return () => {
+            document.removeEventListener("visibilitychange", handleVisibilityChange);
+        };
+    }, [opQueue.pendingCount, router]);
 
     const cursorTaskId = useOutlineStore((state) => state.cursorTaskId);
     const visualSelectedTaskIds = useOutlineStore((state) => state.visualSelectedTaskIds);
@@ -108,61 +150,59 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
     const flashTask = useOutlineStore((state) => state.flashTask);
     const exitVisual = useOutlineStore((state) => state.exitVisual);
 
-    /** Server Action が成功で確定した操作を undo 履歴へ積む */
+    /** 成功した操作でステータス行のエラーを消す。ただし版ずれ停止の文言 (再読み込みの導線) は消さない */
+    const clearStatusError = (): void => {
+        if (!opQueue.isStopped) {
+            setStatusError(null);
+        }
+    };
+
+    /** apply 済みで確定した操作を undo 履歴へ積む (Server Action の成功は待たない、SPEC §5) */
     const pushHistory = (label: string, undoOps: OutlineOp[], redoOps: OutlineOp[]): void => {
         setUndoHistory((previous) => recordEntry(previous, { label, undoOps, redoOps }));
     };
 
     /**
-     * 1 Op を実行する唯一の経路 (楽観適用 → Server Action → ステータス行 → undo 履歴、docs/frontend-design.md §5.2)
+     * 1 Op を実行する唯一の経路 (validate → invert → apply → enqueue → 履歴 push、Issue #70)
      *
+     * すべて同期処理であり、Server Action の応答は待たない (送信は Op キューが裏で行う)。
      * 通常操作 (`x` / `J` / `>` / `dd` / タイトル・説明・期日の確定 / dnd のドロップ) はこの関数を通り、
      * undo/redo (`u` / `U`) は Op 列を順に流す `runOpsForHistory` を通る。どちらも Op から Server Action への
-     * 振り分けを `callServerForOp` (lib/dispatch-op.ts) 1 箇所へ集約しており、Op 種別を足すときに
-     * 片方だけ直す事故が起きないようにしてある (Issue #32)。
+     * 振り分けを `callServerForOp` (lib/dispatch-op.ts、キューの flusher が呼ぶ) 1 箇所へ集約している (Issue #32)。
      *
-     * 履歴に積む Op 列はここで導く。`redoOps` は元の操作そのもの (`[op]`、undo-history.ts の `UndoEntry` 参照)、
-     * `undoOps` は `invertOutlineOp` (lib/invert-op.ts) が Op と実行前のスナップショットから組み立てる。
-     * 逆操作を組み立てられない Op (対象行が手元に無い、`create` / `restore`) は履歴を積めないため、
-     * 楽観適用も Server Action も行わずに何もしない。統合前も各ハンドラが同じ条件で早期 return しており、
-     * 現状この分岐へ到達する呼び出しは無い (呼び出し側が逆操作の材料の有無を先に確かめている)。
+     * 事前バリデーション (lib/validate-op.ts) に失敗した Op は apply も enqueue もせず、
+     * サーバー防波堤に当たったときと同じ形のエラー表示だけを出す。
+     * `onValidationError` は文言の差し替え口で、使うのは `runComplete` の `TASK_BLOCKED` 分岐だけである
+     * (原因タスク名を含む日本語文言に置き換え、原因タスクを点滅させる)。
      *
-     * `onError` は骨格から外れるエラー処理の逃がし口である。ステータス行へ出す文言を返せばそれを使い、
-     * `undefined` を返せば既定の `formatActionError` に委ねる。文言の差し替え以外の副作用 (原因タスクの点滅など) も
-     * この中で行う。使うのは `runComplete` の `TASK_BLOCKED` 分岐だけである。
-     *
-     * Server Action の await は `runServerAction` (task/lib/run-server-action.ts) を通す。
-     * 素の await では Promise の reject が transition の外へ抜けて error boundary へ届き、1 操作の失敗で
-     * 画面全体がエラー表示へ切り替わってしまう (Issue #66、docs/frontend-design.md §8.4)
+     * 履歴に積む Op 列はここで導く。`redoOps` は元の操作そのもの (`[op]`)、`undoOps` は `invertOutlineOp`
+     * (lib/invert-op.ts) が Op と実行前のスナップショットから組み立てる。逆操作を組み立てられない Op
+     * (対象行が手元に無い、`create` / `restore`) は履歴を積めないため何もしない
+     * (呼び出し側が逆操作の材料の有無を先に確かめており、現状この分岐へ到達する呼び出しは無い)
      */
-    const runOp = (op: OutlineOp, label: string, onError?: (result: Extract<ActionResult, { ok: false }>) => string | undefined): void => {
-        // 逆操作の材料も `reorder` の `orderedTaskIds` の再構成も、楽観適用より前の一覧から取る
+    const runOp = (op: OutlineOp, label: string, onValidationError?: (code: TaskErrorCode) => string | undefined): void => {
+        // 逆操作の材料も `reorder` の `orderedTaskIds` の再構成も、適用前の一覧から取る
         const tasksSnapshot = tasks;
         const undoOps = invertOutlineOp(op, tasksSnapshot);
         if (undoOps === null) {
             return;
         }
-        startTransition(async () => {
-            applyOptimisticAction(op);
-            const result = await runServerAction(() => callServerForOp(op, tasksSnapshot));
-            if (!result.ok) {
-                // reject 由来の失敗は `TaskErrorCode` を持たないため、`onError` (TASK_BLOCKED 用の差し替え口) は通さない
-                setStatusError(isActionRejection(result) ? result.message : (onError?.(result) ?? formatActionError(result)));
-                return;
-            }
-            setStatusError(null);
-            pushHistory(label, undoOps, [op]);
-        });
+        const validation = validateOutlineOp(op, tasksSnapshot, dependencies);
+        if (!validation.ok) {
+            setStatusError(onValidationError?.(validation.code) ?? formatValidationError(validation.code));
+            return;
+        }
+        applyOp(op);
+        opQueue.enqueue(op, tasksSnapshot);
+        clearStatusError();
+        pushHistory(label, undoOps, [op]);
     };
 
     const runComplete = (taskId: string): void => {
-        if (isPendingTaskId(taskId)) {
-            return;
-        }
-        // 依存先が未完了で弾かれた場合だけ、Server Action の英語 message ではなく原因タスク名を含む文言を出し、
+        // 依存先が未完了で弾かれた場合だけ、既定の英語 message ではなく原因タスク名を含む文言を出し、
         // その原因タスクを DAG パネルで点滅させる (findBlockingCause は手元の依存関係から原因を 1 件だけ求める)
-        runOp({ type: "complete", taskId }, "完了", (result) => {
-            if (result.code !== "TASK_BLOCKED") {
+        runOp({ type: "complete", taskId }, "完了", (code) => {
+            if (code !== "TASK_BLOCKED") {
                 return undefined;
             }
             const cause = findBlockingCause(taskId, tasks, dependencies);
@@ -173,16 +213,9 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         });
     };
 
-    const runReopen = (taskId: string): void => {
-        if (isPendingTaskId(taskId)) {
-            return;
-        }
-        runOp({ type: "reopen", taskId }, "再オープン");
-    };
-
     const handleToggleDone = (task: AppTask): void => {
         if (task.completed_at !== null) {
-            runReopen(task.id);
+            runOp({ type: "reopen", taskId: task.id }, "再オープン");
             return;
         }
         runComplete(task.id);
@@ -196,49 +229,43 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
     };
 
     /**
-     * VISUAL の `x`。選択範囲の一括完了は、成功した taskId 群を 1 エントリにまとめて undo 履歴へ積む
+     * VISUAL の `x`。選択範囲の一括完了は、各対象を validate し、通過した分だけ apply + enqueue する
      *
-     * 個々の失敗は「N件中M件を完了」という件数で伝えるのが基本だが、reject 由来の失敗だけはステータス行へも出す。
-     * 版ずれやセッション失効は選択範囲の全件を落とすため、件数だけでは利用者が次に何をすればよいか
-     * (再読み込み) を知る手掛かりが無いためである (docs/frontend-design.md §8.4)。
-     * `StatusLine` は `errorMessage` を `infoMessage` より優先して出す
+     * 個々の失敗 (blocked による弾き) は「N件中M件を完了」という件数で伝える (現行踏襲)。
+     * 履歴は通過分を 1 エントリにまとめる。`StatusLine` は `errorMessage` を `infoMessage` より優先して出す
      */
     const completeSelection = (): void => {
-        const taskIds = Array.from(visualSelectedTaskIds).filter((taskId) => !isPendingTaskId(taskId));
+        const taskIds = Array.from(visualSelectedTaskIds);
         if (taskIds.length === 0) {
             exitVisual();
             return;
         }
-        startTransition(async () => {
-            const succeededTaskIds: string[] = [];
-            /** 最初に出た reject の文言。同じ原因が全件に繰り返し出るため、上書きせず 1 つ目を残す */
-            let rejectionMessage: string | null = null;
-            for (const taskId of taskIds) {
-                applyOptimisticAction({ type: "complete", taskId });
-                const result = await runServerAction(() => completeTask({ taskId }));
-                if (result.ok) {
-                    succeededTaskIds.push(taskId);
-                    continue;
-                }
-                if (isActionRejection(result)) {
-                    rejectionMessage ??= result.message;
-                    console.error(`[outline] completeTask rejected for ${taskId}: ${result.message}`);
-                } else {
-                    // DB エラー契約の失敗は件数 (下の `statusMessage`) で伝え、切り分け用に code と message をログへ残す
-                    console.error(`[outline] completeTask failed for ${taskId}: ${result.code} ${result.message}`);
-                }
+        // 先に完了した対象が依存先だった場合は後続の blocked が解けるため、validate は 1 件ずつ適用後の一覧で行う
+        let currentTasks: readonly AppTask[] = tasks;
+        const succeededTaskIds: string[] = [];
+        for (const taskId of taskIds) {
+            const op: OutlineOp = { type: "complete", taskId };
+            const validation = validateOutlineOp(op, currentTasks, dependencies);
+            if (!validation.ok) {
+                // 件数 (下の `statusMessage`) で伝え、切り分け用に code をログへ残す
+                console.error(`[outline] complete validation failed for ${taskId}: ${validation.code}`);
+                continue;
             }
-            setStatusError(rejectionMessage);
-            setStatusMessage(`${taskIds.length}件中${succeededTaskIds.length}件を完了`);
-            if (succeededTaskIds.length > 0) {
-                pushHistory(
-                    `選択範囲の完了 (${succeededTaskIds.length}件)`,
-                    succeededTaskIds.map((taskId): OutlineOp => ({ type: "reopen", taskId })),
-                    succeededTaskIds.map((taskId): OutlineOp => ({ type: "complete", taskId })),
-                );
-            }
-            exitVisual();
-        });
+            const tasksSnapshot = currentTasks;
+            currentTasks = applyOutlineOp(currentTasks, dependencies, op, { fallbackUserId: userId });
+            applyOp(op);
+            opQueue.enqueue(op, [...tasksSnapshot]);
+            succeededTaskIds.push(taskId);
+        }
+        setStatusMessage(`${taskIds.length}件中${succeededTaskIds.length}件を完了`);
+        if (succeededTaskIds.length > 0) {
+            pushHistory(
+                `選択範囲の完了 (${succeededTaskIds.length}件)`,
+                succeededTaskIds.map((taskId): OutlineOp => ({ type: "reopen", taskId })),
+                succeededTaskIds.map((taskId): OutlineOp => ({ type: "complete", taskId })),
+            );
+        }
+        exitVisual();
     };
 
     /**
@@ -246,83 +273,42 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
      *
      * position はカーソル行の兄弟グループ内での並び順から決める。カーソル未選択のときは
      * ルート直下の兄弟グループ末尾へ作る (computeCreatePosition が null を返す)。
-     * tempId は crypto.randomUUID() で採番し、楽観行を即表示してカーソルも合わせる。
-     * Server Action 成功後、実 id へ setCursor し直す。
+     * id は crypto.randomUUID() で採番した実 PK であり、createTask Server Action の INSERT にそのまま使う
+     * (Issue #70)。行はこの id のまま生き続けるため、settle 後の付け替えは要らない。
      *
-     * settle 時は tempId → 実id の付け替えを「同一論理行」として扱う (pending-create-registry.ts)。
-     * `recordRename` で対応表へ記録したうえで、カーソルと (編集中であれば) `inlineTitleEdit.taskId` の両方を
-     * 実id へ揃える。カーソルの付け替え自体は `usePendingCreate` のレンダー時調整が対応表を見て「畳まない」と
-     * 判定するため、ここで `setInlineTitleEdit` を呼んでも編集中の下書き (`draft`) は保たれる
-     * (`InlineTitleEditor` は controlled value になっており、行の再マウントをまたいで `OutlineShell` 側の
-     * state に生き続ける)。
-     * settle 前に Enter/Esc で確定されたタイトルがあれば (`commitInlineTitleEdit` が保留したもの)、
-     * ここで実id の通常パイプラインへ流す。create 自体が失敗した場合は保留分を破棄し、既存のエラー表示に合流する
+     * 履歴は通常パイプラインの「redo = 元の Op」では表せない (undo の softDelete 後に create を再送すると
+     * 同一 id の INSERT が防波堤に当たる) ため、undo = softDelete / redo = restore の対を自前で積む。
+     * restore の材料になる「作成直後の行」は applyOutlineOp を先に純関数として呼んで求める
      */
     const createSibling = (placement: SiblingPlacement): void => {
         const parentId = cursorTask?.parent_id ?? null;
         const position = computeCreatePosition({ tasks, cursorTaskId: cursorTask?.id ?? null, placement });
-        const tempId = crypto.randomUUID();
-        const title = "新規タスク";
-        // undo (redo of create = restore) の材料として、確定前に「作成直後の行」を純関数で先読みしておく。
-        // 実 id が分かるのは Server Action の応答後だが、position/effective_parent_id/sort_path は
-        // applyOutlineOp を直接呼べば同じ計算で先に求まる (dispatch はまだしない、副作用なし)
-        const projectedRow = applyOutlineOp(tasks, dependencies, { type: "create", tempId, title, parentId, position }, { fallbackUserId: userId }).find((task) => task.id === tempId);
-
-        pendingTempIdsRef.current.add(tempId);
-        startTransition(async () => {
-            applyOptimisticAction({ type: "create", tempId, title, parentId, position });
-            setCursor(tempId);
-            const result = await runServerAction(() => createTask({ title, parentId, position }));
-            pendingTempIdsRef.current.delete(tempId);
-            if (!result.ok) {
-                // 保留中のタイトル確定があれば、create 自体の失敗に合わせて破棄する
-                takePendingTitle(pendingCreate, tempId);
-                setStatusError(formatOutcomeError(result));
-                return;
-            }
-            const realId = result.data.id;
-            // 先読みしておいた行を実 id 名義にしたもの。undo 履歴の材料であると同時に、
-            // revalidate 到着までのつなぎとして一覧へ差し込む行でもある (Issue #60、pending-create-registry.ts)
-            const snapshot: AppTask | undefined = projectedRow === undefined ? undefined : { ...projectedRow, id: realId };
-            recordRename(pendingCreate, tempId, realId, snapshot);
-            setCursor(realId);
-            setInlineTitleEdit((current) => (current !== null && current.taskId === tempId ? { ...current, taskId: realId } : current));
-            setStatusError(null);
-            if (snapshot !== undefined) {
-                pushHistory("新規タスク", [{ type: "softDelete", taskId: realId }], [{ type: "restore", taskId: realId, snapshot }]);
-            }
-            // settle 前に Enter/Esc で確定されていたタイトルを、実id の通常パイプライン
-            // (楽観適用 + updateTask + undo 履歴) へ流す。create の title (= "新規タスク") のままなら何もしない
-            const pendingTitle = takePendingTitle(pendingCreate, tempId);
-            if (pendingTitle !== undefined && pendingTitle !== title) {
-                applyOptimisticAction({ type: "updateTitle", taskId: realId, title: pendingTitle });
-                const titleResult = await runServerAction(() => updateTask({ taskId: realId, title: pendingTitle }));
-                if (!titleResult.ok) {
-                    setStatusError(formatOutcomeError(titleResult));
-                    return;
-                }
-                pushHistory("タイトル変更", [{ type: "updateTitle", taskId: realId, title }], [{ type: "updateTitle", taskId: realId, title: pendingTitle }]);
-            }
-        });
+        const op: OutlineOp = { type: "create", id: crypto.randomUUID(), title: "新規タスク", parentId, position };
+        const validation = validateOutlineOp(op, tasks, dependencies);
+        if (!validation.ok) {
+            setStatusError(formatValidationError(validation.code));
+            return;
+        }
+        const snapshot = applyOutlineOp(tasks, dependencies, op, { fallbackUserId: userId }).find((task) => task.id === op.id);
+        applyOp(op);
+        opQueue.enqueue(op, tasks);
+        setCursor(op.id);
+        clearStatusError();
+        if (snapshot !== undefined) {
+            pushHistory("新規タスク", [{ type: "softDelete", taskId: op.id }], [{ type: "restore", taskId: op.id, snapshot }]);
+        }
     };
 
     /**
-     * タイトル変更の確定。タイトルが変わっていなければ Server Action を投げずに編集だけ畳む
+     * タイトル変更の確定。タイトルが変わっていなければ Op を流さずに編集だけ畳む
      *
      * 行内タイトル編集 (`i` / `I` / `a` / `A`) と DetailPane のタイトル編集の両方から呼ぶ共通ハンドラである
      * (どちらも同じ `updateTitle` Op を経由する単一の保存経路、docs/frontend-design.md §5.2)。
      * DetailPane 側には行内編集の state (`inlineTitleEdit`) が無いため、`setInlineTitleEdit(null)` は
-     * その経路では実質 no-op (既に null) になるだけで害はない。
-     *
-     * `taskId` が tempId (createTask の settle 待ち) の場合は、settle 後に実id で通常パイプラインへ流すため、
-     * ここでは保留キューへ置くだけにする (`createSibling` の settle 処理が `takePendingTitle` で取り出す)
+     * その経路では実質 no-op (既に null) になるだけで害はない
      */
     const commitInlineTitleEdit = (taskId: string, title: string): void => {
         setInlineTitleEdit(null);
-        if (isPendingTaskId(taskId)) {
-            queuePendingTitle(pendingCreate, taskId, title);
-            return;
-        }
         const task = tasksById.get(taskId);
         if (task === undefined || task.title === title) {
             return;
@@ -334,13 +320,9 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
      * DetailPane の説明編集の確定 (docs/frontend-design.md §5.2, §6.5)
      *
      * `commitInlineTitleEdit` と同じ形 (値が変わっていなければ何もせず、変わっていれば `runOp` へ渡す)。
-     * 確定した瞬間に `applyOptimisticAction` で即時反映されるため、Server Action の応答を待たずに
-     * 呼び出し元 (DetailPane) は編集領域を畳んでよい。「保存中」のブロッキング表示はここでは行わない
+     * 適用は同期なので、呼び出し元 (DetailPane) はそのまま編集領域を畳んでよい。「保存中」のブロッキング表示はしない
      */
     const commitDescriptionEdit = (taskId: string, description: string): void => {
-        if (isPendingTaskId(taskId)) {
-            return;
-        }
         const task = tasksById.get(taskId);
         if (task === undefined || task.description === description) {
             return;
@@ -350,9 +332,6 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
 
     /** DetailPane の期日編集の確定。commitDescriptionEdit と同じ形 */
     const commitDueDateEdit = (taskId: string, dueDate: string | null): void => {
-        if (isPendingTaskId(taskId)) {
-            return;
-        }
         const task = tasksById.get(taskId);
         if (task === undefined || task.due_date === dueDate) {
             return;
@@ -362,7 +341,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
 
     /** `J`/`K`。同一階層で 1 つ下/上へ (`reorder` Op)。逆操作は移動前の rank へ戻す `reorder` */
     const moveCursorSibling = (direction: "up" | "down"): void => {
-        if (cursorTaskId === null || isPendingTaskId(cursorTaskId)) {
+        if (cursorTaskId === null) {
             return;
         }
         const taskId = cursorTaskId;
@@ -371,13 +350,13 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
             return;
         }
         // `reorder` Op が持つのは兄弟内の rank だけである。Server Action へ渡す `orderedTaskIds` は
-        // `callServerForOp` が同じ rank から再構成する (outline-ops.ts の resolveReorderedSiblingIds)
+        // キューの flusher が同じ rank から再構成する (outline-ops.ts の resolveReorderedSiblingIds)
         const newRank = result.orderedTaskIds.indexOf(taskId);
         runOp({ type: "reorder", taskId, newPosition: newRank }, direction === "down" ? "下へ移動" : "上へ移動");
     };
 
     const indentCursor = (): void => {
-        if (cursorTaskId === null || isPendingTaskId(cursorTaskId)) {
+        if (cursorTaskId === null) {
             return;
         }
         const taskId = cursorTaskId;
@@ -389,7 +368,7 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
     };
 
     const outdentCursor = (): void => {
-        if (cursorTaskId === null || isPendingTaskId(cursorTaskId)) {
+        if (cursorTaskId === null) {
             return;
         }
         const taskId = cursorTaskId;
@@ -407,17 +386,17 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
      * `restore_task` RPC (migration 0005) は actual sibling group の末尾へ position を移す仕様であり (req.md §26)、
      * 削除前の元の位置には戻さない (restore-task.ts のドキュメントコメント参照)。
      * undo で「元の位置に戻った」ように見せるには、restore に続けて元の parent_id/position への `move` が要る。
-     * `move` の楽観適用は oldParentId/oldPosition === newParentId/newPosition (どちらも snapshot の値) の
+     * `move` の適用は oldParentId/oldPosition === newParentId/newPosition (どちらも snapshot の値) の
      * ときに no-op になる (applyOutlineOp の隙間詰め/隙間空けが互いに打ち消す) ため、
      * ローカル表示は restore 直後の snapshot 位置のまま変わらず、末尾へ飛んで見えることはない。
      * サーバー側だけ tail → 元の位置へ move_task RPC で正しく収束する。
      * restore_task は復元対象が空けた穴も詰めるため (migration 20260813000001、Issue #23)、
-     * 続く move_task の後の兄弟の position は楽観適用側と一致する
+     * 続く move_task の後の兄弟の position はクライアント適用側と一致する
      * (supabase/tests/011_position_gaps.test.sql のケース8 と outline-ops.test.ts が両側を固定する)
      * (この 2 Op 列の組み立ては lib/invert-op.ts の `softDelete` 分岐が持つ)
      */
     const softDeleteCursor = (): void => {
-        if (cursorTaskId === null || isPendingTaskId(cursorTaskId)) {
+        if (cursorTaskId === null) {
             return;
         }
         runOp({ type: "softDelete", taskId: cursorTaskId }, "ゴミ箱へ移動");
@@ -425,40 +404,36 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
 
     /** dnd-kit のドロップ確定 (同一 actual parent 内)。キーボード代替の `moveCursorSibling` と同じ `reorder` Op を使う */
     const handleReorder = (taskId: string, result: SiblingReorderResult): void => {
-        if (isPendingTaskId(taskId)) {
-            return;
-        }
         runOp({ type: "reorder", taskId, newPosition: result.orderedTaskIds.indexOf(taskId) }, "並べ替え");
     };
 
     /** dnd-kit のドロップ確定 (actual parent が変わる)。キーボード代替の indent/outdent と同じ `move` Op を使う */
     const handleReparent = (taskId: string, result: ReparentResult): void => {
-        if (isPendingTaskId(taskId)) {
-            return;
-        }
         runOp({ type: "move", taskId, newParentId: result.newParentId, newPosition: result.newPosition }, "親を変更");
     };
 
     /**
-     * 確定済み Op の列を通常パイプライン (楽観適用 + Server Action) で順に実行する (undo/redo 共通処理)
+     * 確定済み Op の列を通常パイプライン (validate → apply → enqueue) で順に実行する (undo/redo 共通処理)
      *
-     * 1 つでも失敗すればエラー表示のうえ `false` を返し、呼び出し側はそのエントリを再度スタックへ積まない (破棄する)。
-     * `tasksSnapshot` は `reorder` Op が Server Action へ渡す `orderedTaskIds` の再構成に使う (実行前の 1 スナップショット固定)
+     * 2 Op 目以降の validate と snapshot は直前の Op を適用した後の一覧で行うため、手元でも同じ適用を重ねて進める。
+     * 途中の Op がバリデーションで弾かれたらそこで打ち切り、エラー表示のうえ `false` を返す。
+     * 呼び出し側はそのエントリを再度スタックへ積まない (破棄する)
      */
-    const runOpsForHistory = async (ops: readonly OutlineOp[], tasksSnapshot: readonly AppTask[]): Promise<boolean> => {
-        let allOk = true;
+    const runOpsForHistory = (ops: readonly OutlineOp[]): boolean => {
+        let currentTasks: readonly AppTask[] = tasks;
         for (const op of ops) {
-            applyOptimisticAction(op);
-            const result = await runServerAction(() => callServerForOp(op, tasksSnapshot));
-            if (!result.ok) {
-                allOk = false;
-                setStatusError(formatOutcomeError(result));
+            const validation = validateOutlineOp(op, currentTasks, dependencies);
+            if (!validation.ok) {
+                setStatusError(formatValidationError(validation.code));
+                return false;
             }
+            const tasksSnapshot = currentTasks;
+            currentTasks = applyOutlineOp(currentTasks, dependencies, op, { fallbackUserId: userId });
+            applyOp(op);
+            opQueue.enqueue(op, [...tasksSnapshot]);
         }
-        if (allOk) {
-            setStatusError(null);
-        }
-        return allOk;
+        clearStatusError();
+        return true;
     };
 
     /** `u`。undo スタックの末尾を実行する (docs/frontend-design.md §5.2) */
@@ -467,14 +442,8 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         if (popped === null) {
             return;
         }
-        setUndoHistory(popped.rest);
-        const tasksSnapshot = tasks;
-        startTransition(async () => {
-            const allOk = await runOpsForHistory(popped.entry.undoOps, tasksSnapshot);
-            if (allOk) {
-                setUndoHistory((previous) => pushToRedo(previous, popped.entry));
-            }
-        });
+        const allOk = runOpsForHistory(popped.entry.undoOps);
+        setUndoHistory(allOk ? pushToRedo(popped.rest, popped.entry) : popped.rest);
     };
 
     /** `U`。redo スタックの末尾を実行する (docs/frontend-design.md §5.2) */
@@ -483,19 +452,14 @@ export const useOutlineMutations = ({ userId, tasks, tasksById, dependencies, cu
         if (popped === null) {
             return;
         }
-        setUndoHistory(popped.rest);
-        const tasksSnapshot = tasks;
-        startTransition(async () => {
-            const allOk = await runOpsForHistory(popped.entry.redoOps, tasksSnapshot);
-            if (allOk) {
-                setUndoHistory((previous) => pushToUndo(previous, popped.entry));
-            }
-        });
+        const allOk = runOpsForHistory(popped.entry.redoOps);
+        setUndoHistory(allOk ? pushToUndo(popped.rest, popped.entry) : popped.rest);
     };
 
     return {
         statusMessage,
         statusError,
+        pendingCount: opQueue.pendingCount,
         handleToggleDone,
         completeCursor,
         completeSelection,

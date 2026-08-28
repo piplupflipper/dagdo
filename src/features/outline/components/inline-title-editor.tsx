@@ -9,8 +9,8 @@ export type InlineTitleEditorProps = {
      * 現在の下書き文字列 (呼び出し元が保持する controlled value)
      *
      * 以前はこのコンポーネント自身の `useState` で持っていたが、`OutlineRow` が `key={task.id}` で
-     * 行を再マウントするため、楽観 create の tempId → 実 id の付け替え時に下書きが失われるバグがあった
-     * (バグ修正)。呼び出し元 (`OutlineShell` の `inlineTitleEdit.draft`) へ引き上げ、
+     * 行を再マウントするため、行の作り直しで下書きが失われるバグがあった (バグ修正)。
+     * 呼び出し元 (`OutlineShell` の `inlineTitleEdit.draft`) へ引き上げ、
      * 再マウントをまたいで生き残るようにしてある
      */
     value: string;

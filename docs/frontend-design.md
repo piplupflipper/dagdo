@@ -1,9 +1,9 @@
 # dagdo フロントエンド技術設計書
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 2752573
+- 対象コミット: 904e36d
 - 作成日: 2026-08-08
-- 更新日: 2026-08-13
+- 更新日: 2026-08-28
 - 生成者: Claude Code
 
 本文書は dagdo のフロントエンドの現在の設計を述べる。
@@ -42,7 +42,7 @@
 UI は、4 ラウンドのモック検討で決めたアウトライナー基盤 + vim ライクキーボード操作、PC 2 ペイン構成である。
 配色は mdblog-nextjs と同じ夜空パレットを用いた固定ダークテーマとし、テーマ切替は持たない（第 10 章）。
 
-技術選定は、クライアント状態に **Zustand**、サーバー状態に **Server Actions + `useOptimistic` + revalidate**、Markdown に **react-markdown + remark-gfm**、並べ替えに **dnd-kit** である。
+技術選定は、クライアント状態に **Zustand**、タスクデータに **クライアント正 state + 直列 Op キューによる write-behind**（変更をまず手元へ適用し、永続化は背後のキューが Server Actions 経由で自動的に行う方式。第 5.2 節）、Markdown に **react-markdown + remark-gfm**、並べ替えに **dnd-kit** である。
 本文書はこれらの配置場所と責務分割を定める。
 
 規約は本書のコード規約（第 3 章）に従う。
@@ -64,7 +64,7 @@ Auth.js の設定詳細と Custom JWT 生成の実装は `docs/auth-design.md`�
 | スタイリング | Tailwind CSS v4 | v4 系最新 | `@theme` トークンでデザイントークンを管理する |
 | UI コンポーネント | なし（素の JSX + Tailwind ユーティリティ） | — | UI コンポーネントライブラリを導入しない（第 3 章） |
 | クライアント状態管理 | Zustand | 最新 stable | カーソル・vim モード・折りたたみ・選択範囲・表示順 ID のみを保持する（第 5 章） |
-| サーバー状態 | Server Actions + `useOptimistic` + revalidate | Next.js 同梱 API のみで構成し追加のデータ取得ライブラリを導入しない | RSC 初回取得を正とする |
+| タスクデータの状態 | クライアント正 state + 直列 Op キュー (write-behind) + Server Actions | Next.js 同梱 API のみで構成し追加のデータ取得ライブラリを導入しない | RSC 初回取得を初期値とし、セッション中はクライアント state を正とする（第 5.2 節） |
 | Markdown | react-markdown + remark-gfm | 最新 stable | textarea 編集とプレビュー切替の二画面方式とする |
 | 並べ替え | dnd-kit（`@dnd-kit/core` / `@dnd-kit/sortable`） | 最新 stable | キーボード代替（J/K/`<`/`>`）と共存させる（第 9 章） |
 | データベース | Supabase PostgreSQL | Supabase 側の管理に従う | Data API・RLS・View・Trigger・RPC を利用する(req.md §2.2) |
@@ -156,7 +156,7 @@ dagdo は単一アプリ・単一リポジトリであり、npm workspaces に�
 `components/` と `hooks/` は React に依存する層であり、判断のロジックは `lib/` へ切り出して薄く保つ。
 
 feature 間の import は一方向に保つ。
-`task-detail` は `outline` を import せず、両者が要る述語（`isSameLogicalRow`）や導出（`dependsOnTasksOf`）は中立な `task` feature へ置く。
+`task-detail` は `outline` を import せず、両者が要る導出（`dependsOnTasksOf`）は中立な `task` feature へ置く。
 
 テストファイル（`*.test.ts` / `*.test.tsx`）は対象と同じディレクトリに置く。
 下のツリーでは省略する（一覧は第 11 章）。
@@ -194,12 +194,14 @@ src/
       hooks/
         use-outline-keymap.ts       # NORMAL/VISUAL/SEARCH のディスパッチ (第 6.2 節)
         use-outline-mutations.ts    # 書き換え操作の単一パイプライン `runOp` (第 5.2 節)
-        use-pending-create.ts       # 楽観 create の tempId → 実 id 付け替えの調整 (第 5.2 節)
+        use-op-queue.ts             # 直列 Op キューの実体 (モジュールスコープ) と購読フック (第 5.2 節)
         use-row-refs.ts             # 行 DOM 位置測定用の ref Map 管理 (第 7.2 節)
       lib/
         build-tree.ts               # app_tasks → 表示順フラットリスト構築・折りたたみ反映
         flatten-for-dnd.ts          # dnd 用フラット化と新 parent・position の算出 (第 9 章)
-        outline-ops.ts              # OutlineOp と楽観適用の純関数 applyOutlineOp (第 5.2 節)
+        outline-ops.ts              # OutlineOp と Op 適用の純関数 applyOutlineOp (第 5.2 節)
+        op-queue.ts                 # 未送信 Op の FIFO 列と enqueue 時の coalesce (第 5.2 節)
+        validate-op.ts              # enqueue 前の事前バリデーション (第 5.2 節)
         dispatch-op.ts              # OutlineOp → Server Action の振り分け callServerForOp
         invert-op.ts                # OutlineOp の逆操作を組み立てる invertOutlineOp
         sibling-rank.ts             # 同一 actual parent 内の現在 rank（逆操作の材料）
@@ -211,7 +213,6 @@ src/
         keymap-help.ts              # テーブルからヘルプの表示セクションを導く (第 6.3 節)
         key-sequence.ts             # キーシーケンス表現のトークン分解・整形
         inline-title-edit.ts        # 行内タイトル編集の状態型と判定 (第 6.4 節)
-        pending-create-registry.ts  # tempId → 実 id の対応表・つなぎの行・行の論理キー・保留タイトルのキュー
         pane-ratio.ts               # ペイン比率の clamp と localStorage 値の解釈
 
     task-detail/                    # 右ペイン上部・モバイル詳細シート
@@ -277,7 +278,6 @@ src/
         map-db-error.ts             # SQLSTATE / メッセージ → TaskErrorCode 変換 (第 8.3 節)
         queries.ts                  # RSC が呼ぶ読み取り関数 (第 8.1 節)
         depends-on-tasks.ts         # task_dependencies から依存先タスクの実体を引き直す
-        temp-id-renames.ts          # tempId → 実 id の付け替えかを読む述語（outline / task-detail 共用）
 
   store/
     outline-store.ts                # Zustand ストア本体 (第 5.1 節)
@@ -331,11 +331,11 @@ Zustand ストアはどの feature にも属さない横断的な UI 状態で�
 この方針の具体的な適用は、行内タイトル編集の `Esc`（第 6.4 節）と `DetailPane` 各編集領域の `Esc`（第 6.5 節）で個別に述べる。
 依存先追加候補の `select`（第 6.5 節）はこの方針からの意図的な例外であり、理由も同節に明記する。
 
-第二に、更新系の fetch（Server Action）は基本的に非同期で行い、UI をブロックしない。
-`OutlineOp` リデューサ（第 5.2 節）による楽観反映で確定した瞬間に UI へ反映し、Server Action の応答は待たない。
-失敗した場合はステータスライン（`StatusLine`）で通知する。
-「保存中」のようなブロッキング表示・disabled は置かない。
-この方針の適用範囲は第 5.2 節が扱う `OutlineOp` の対象操作全般であり、依存関係の追加・削除（`addDependency` / `removeDependency`）のように Op リデューサの対象外の操作には及ばない（第 5.2 節）。
+第二に、ブラウザ上の操作と DB への永続化を切り離す（write-behind、Issue #70）。
+1 回の操作（`OutlineOp`、第 5.2 節）はまず手元のクライアント正 state へ同期適用して UI に反映し、永続化は背後の直列 Op キューが Server Action 経由で自動的に行う。
+Server Action の応答をどの操作も待たないため、ネットワークの速度は UI の応答に影響しない。
+永続化しきれない失敗はステータスライン（`StatusLine`）で通知し、「保存中」のようなブロッキング表示・disabled も明示的な保存ボタンも置かない。
+この方針の適用範囲は第 5.2 節が扱う `OutlineOp` の対象操作全般であり、依存関係の追加・削除（`addDependency` / `removeDependency`）のように Op の対象外の操作には及ばない（第 5.2 節）。
 
 ### 5.1 Zustand ストア設計
 
@@ -423,19 +423,22 @@ type OutlineActions = {
 ### 5.2 サーバー状態との境界
 
 タスクデータ（`title` / `description` / `completed_at` / `is_blocked` など）を Zustand ストアへ複製しない。
-タスクデータは RSC（`app/page.tsx`）が取得した props として `OutlineShell` へ渡り、クライアント側では読み取り専用として扱う。
-書き込みが必要な操作は Server Action を呼び、成功後の `revalidatePath` によって RSC から流れ直す props で真値を更新する。
-
-楽観的更新は `useOptimistic` を用いて props 由来のタスク配列に対するオーバーレイとして実装する。
+タスクデータは RSC（`app/page.tsx`）が取得した props（`initialTasks` / `initialDependencies`）として `OutlineShell` へ渡り、`OutlineShell` が初回マウント時に `useState` へ取り込む。
+以後のセッション中はこのクライアント state を正とし、書き換え操作はまず手元へ同期適用してから、背後の直列 Op キュー（本節後半）が Server Action 経由で永続化する。
 Zustand には「どのタスクにカーソルがあるか」「どの範囲が選択されているか」といった UI 座標的な状態のみを置き、タスクの内容そのものは一切保持しない。
-この分離により、ストアのシリアライズ範囲が小さく保たれ、タスクデータの再取得（revalidate）とカーソル位置のようなセッション的な UI 状態が互いに独立して更新できる。
 
-全構造操作（作成・完了・再オープン・タイトル変更・移動・並べ替え・ゴミ箱への移動・復元）と `DetailPane` の説明・期日の編集を、「表示状態 = reduce(サーバー由来 tasks, pendingOps)」という単一リデューサ方式で表す。
+props の変化（`router.refresh()` や依存編集の revalidate に由来する RSC の再描画）は、**キューに未送信・送信中の Op が 1 つも無いときだけ** state へ採用する（reconcile ゲート、`outline-shell.tsx`）。
+未同期の Op がある間のサーバー由来の一覧はその Op を含まない古い姿であり、そのまま採用すると未反映の編集が巻き戻って見えるためである。
+キューが空になった時点の reconcile トリガ（第 8.6 節）が改めて取り直すため、見送った props が取り込まれないままにはならない。
+tasks と dependencies は同時に採用する。
+別タブ・別デバイスとの競合はこの仕組みでは解決せず、Op 単位の last-write-wins と reconcile による収束で許容する（別タブで消えた行への操作は本節後半の防波堤経由で収束する）。
+
+全構造操作（作成・完了・再オープン・タイトル変更・移動・並べ替え・ゴミ箱への移動・復元）と `DetailPane` の説明・期日の編集を、単一のリデューサ（`applyOutlineOp`）への Op 適用として表す。
 1 回のユーザー操作（キー入力・dnd ドロップ・`DetailPane` の編集確定）を discriminated union の `OutlineOp`（`features/outline/lib/outline-ops.ts`）1 件に対応させる。
 
 ```typescript
 type OutlineOp =
-    | { type: "create"; tempId: string; title: string; parentId: string | null; position: number | null }
+    | { type: "create"; id: string; title: string; parentId: string | null; position: number | null }
     | { type: "complete"; taskId: string }
     | { type: "reopen"; taskId: string }
     | { type: "updateTitle"; taskId: string; title: string }
@@ -447,14 +450,16 @@ type OutlineOp =
     | { type: "restore"; taskId: string; snapshot: AppTask };
 ```
 
-reducer は `outline-shell.tsx` が次の形で組む。
+適用は `outline-shell.tsx` が次の形で組む。
 
 ```typescript
-const [optimisticTasks, applyOptimisticAction] = useOptimistic(initialTasks, (state: AppTask[], op: OutlineOp) => applyOutlineOp(state, dependencies, op, { fallbackUserId: userId }));
+const applyOp = (op: OutlineOp): void => {
+    setTasks((previous) => applyOutlineOp(previous, dependencies, op, { fallbackUserId: userId }));
+};
 ```
 
-第 4 引数の `{ fallbackUserId }` は `create` の楽観行が持つ `user_id` を決めるための代替値である。
-楽観行はサーバーの応答を待たずに組み立てるため、通常は手元の `tasks[0].user_id` を借りる。
+第 4 引数の `{ fallbackUserId }` は `create` が挿入する行の `user_id` を決めるための代替値である。
+行はサーバーの応答を待たずに組み立てるため、通常は手元の `tasks[0].user_id` を借りる。
 アウトラインが空の状態で最初の 1 件を作る場合に借りる先が無いため、`OutlineShell` がセッションの `userId` をここから渡す。
 
 `applyOutlineOp(tasks, dependencies, op, options)` は 1 Op を適用したうえで、`app_tasks` View（`supabase/migrations/20260808000003_app_tasks_view.sql`）と同じ意味論で `sort_path` / `effective_parent_id` / `is_blocked` を全行再計算する（normalize）純関数である。
@@ -467,10 +472,10 @@ const [optimisticTasks, applyOptimisticAction] = useOptimistic(initialTasks, (st
 旧兄弟グループの隙間を詰め、次に末尾を解決し、最後に新兄弟グループの隙間を空ける。
 移動先が移動元と同じ兄弟グループのとき、詰める前に末尾を求めると対象自身の分だけ 1 つ大きくなるためである。
 
-末尾指定では楽観適用とサーバーで position の数値がずれる場合がある。
+末尾指定では手元の適用とサーバーで position の数値がずれる場合がある。
 手元の `tasks` には論理削除済みの行が無いため（`softDelete` で配列から除いている）、`applyMove` が求める末尾は、移動先の兄弟グループの末尾に論理削除済みの行が並んでいる場合だけサーバーの採番より小さくなる。
 末尾は `max(position) + 1` で求めるため、論理削除済みの行が末尾以外にいる場合は数値まで一致する。
-ずれても可視の兄弟すべてより大きい値になるため表示順は一致し、revalidate 後にサーバーの値へ収束する。
+ずれても可視の兄弟すべてより大きい値になるため表示順は一致し、reconcile（第 8.6 節）後にサーバーの値へ収束する。
 `applyCreate` が `position` 省略時の末尾を手元の兄弟の件数から求める点も同じ妥協である（`createTask` は論理削除済みも含めた件数を採番に使う、`features/task/actions/create-task.ts`）。
 
 `reorder` が持つのは同一 actual parent 内の rank（0-based）だけである。
@@ -483,45 +488,87 @@ Op に ID 配列を持たせないのは、undo 履歴へ積む逆操作を「�
 #### 単一パイプライン `runOp`
 
 書き換え操作は `features/outline/hooks/use-outline-mutations.ts` の `runOp` 1 本に集約する。
-`runOp` は「逆操作の組み立て → 楽観適用 → Server Action → ステータス行 → undo 履歴」の順に進む。
+`runOp` は「事前バリデーション → 逆操作の組み立て → 適用 → enqueue → undo 履歴」の順に進む同期処理であり、Server Action の応答をどこでも待たない。
 
-1. 実行前のタスク一覧（`optimisticTasks`）を `tasksSnapshot` として固定する
-2. `invertOutlineOp(op, tasksSnapshot)`（`features/outline/lib/invert-op.ts`）で逆操作の Op 列を組み立てる。組み立てられない場合（`create` / `restore`、対象行が手元に無い場合）は楽観適用も Server Action も行わずに終える
-3. `applyOptimisticAction(op)` で楽観適用する
-4. `callServerForOp(op, tasksSnapshot)`（`features/outline/lib/dispatch-op.ts`）で対応する Server Action を呼ぶ。await は `runServerAction`（`features/task/lib/run-server-action.ts`）で包み、reject も失敗を表す値として受け取る（第 8.4 節）
-5. 失敗ならステータス行（`StatusLine`）へエラー文言を出す。成功なら `{ label, undoOps: 逆操作の Op 列, redoOps: [op] }` を undo 履歴へ積む
+1. 実行前のタスク一覧を `tasksSnapshot` として固定する
+2. `invertOutlineOp(op, tasksSnapshot)`（`features/outline/lib/invert-op.ts`）で逆操作の Op 列を組み立てる。組み立てられない場合（`restore`、対象行が手元に無い場合）は適用も enqueue も行わずに終える
+3. `validateOutlineOp(op, tasksSnapshot, dependencies)`（`features/outline/lib/validate-op.ts`）で事前バリデーションする。失敗なら適用も enqueue もせず、ステータス行（`StatusLine`）へエラー文言を出して終える
+4. `applyOp(op)` でクライアント正 state へ同期適用する
+5. `opQueue.enqueue(op, tasksSnapshot)` で直列 Op キュー（次項）へ積む
+6. `{ label, undoOps: 逆操作の Op 列, redoOps: [op] }` を undo 履歴へ積む
 
-`invertOutlineOp` は Op と実行前のスナップショットだけを受け取る純関数であり、「いつ積むか」（Server Action の成功時のみ）の判断は `runOp` に残す。
+`invertOutlineOp` は Op と実行前のスナップショットだけを受け取る純関数である。
 `reorder` の逆操作は移動前の rank であり、`sibling-rank.ts` の `siblingRankOf` が求める。
 
-`callServerForOp` は Op 種別から Server Action への振り分けを持つ唯一の場所である。
-通常操作（`runOp`）と undo/redo の再実行（`runOpsForHistory`）がともにここを通るため、Op 種別を足したときに片方の経路だけを直し忘れる余地がない。
-
-エラー処理の既定は `formatActionError`（`features/outline/lib/action-error.ts`）による文言表示である。
-`runOp` の第 3 引数 `onError` はその差し替え口であり、使うのは `x`（完了）の `TASK_BLOCKED` 分岐だけである。
+バリデーション失敗時の表示文言の既定は `formatValidationError`（`use-outline-mutations.ts`。サーバー防波堤の `RAISE EXCEPTION` と同じ英語 message を `TaskErrorCode` に添える）である。
+`runOp` の第 3 引数 `onValidationError` はその差し替え口であり、使うのは `x`（完了）の `TASK_BLOCKED` 分岐だけである。
 この分岐では `findBlockingCause`（`blocking-cause.ts`）が手元の依存関係から原因タスクを 1 件求め、その名前を含む日本語文言を出したうえで `flashTask` でそのノードを点滅させる。
 
 表示文言は `TaskErrorCode` の記号名と本文だけで組み立て、表示専用の連番は持たない。
 番号は migration が定める SQLSTATE（`ET001`〜`ET007`、第 8.3 節）の 1 系統に絞る。
 
+#### 事前バリデーション
+
+サーバー側の trigger（SQLSTATE `ET001`〜`ET007`、第 8.3 節）が弾く操作のうち、判定材料（タスクの木・依存関係・`is_blocked`）が手元に揃っているものは、enqueue する前にクライアントで弾く（`validate-op.ts` の `validateOutlineOp`）。
+永続化が非同期になったことで、サーバーに弾かせると失敗の通知が操作の数秒後に届き、その間のユーザー操作が失敗した状態の上へ積まれてしまうためである。
+
+クライアントで判定するのは `TASK_BLOCKED`（complete 対象の依存先に未完了が残る）・`TASK_PARENT_CYCLE`（move の新しい親が対象自身または子孫）・`INVALID_PARENT`（move の新しい親が手元に無い）・`INVALID_POSITION`（負数の position。move の上限は検査しない。`task.position` は論理削除済み兄弟を含む実 position であり、可視件数を上限にすると削除済み兄弟がいる行の `dd` → `u` を誤って弾くため）の 4 種である。
+`TASK_NOT_FOUND` は別タブ・別デバイス起因であり事前判定できない。
+依存編集の `TASK_DEPENDENCY_CYCLE` / `DEPENDENCY_ALREADY_EXISTS` は Op の対象外であり扱わない。
+
+サーバー側の trigger は削除せず防波堤として残す。
+事前バリデーションをすり抜けた失敗（`TASK_NOT_FOUND` や判定の不一致）が防波堤に当たった場合の扱いは次項で述べる。
+
+#### 直列 Op キュー
+
+永続化は `features/outline/hooks/use-op-queue.ts` が担う。
+未送信 Op の FIFO 列（`features/outline/lib/op-queue.ts`）に対し、単一の flusher が先頭から順に `callServerForOp(op, tasksSnapshot)`（`features/outline/lib/dispatch-op.ts`）で Server Action へ送る。
+送信中の Op（in-flight）は常に最大 1 本であり、並行送信しない。
+直列にするのは操作の到着順を保証するためである（並行に送ると、低速回線で `reorder` の連打が入れ替わって届き、古い並びが後勝ちしうる）。
+
+`callServerForOp` は Op 種別から Server Action への振り分けを持つ唯一の場所である。
+`tasksSnapshot` は enqueue 時点（適用前）の一覧であり、`reorder` が Server Action へ渡す `orderedTaskIds` の再構成（`resolveReorderedSiblingIds`）に使うためエントリへ閉じ込める。
+
+enqueue 時、末尾の未送信エントリと種別・taskId が同じ `updateTitle` / `updateDescription` / `updateDueDate` / `reorder` は後の Op で置き換える（coalesce）。
+間に他の Op を挟む場合は置き換えない（順序保証を優先する）。
+
+送信結果は 4 通りに分岐する（await は `runServerAction` で包み、reject も失敗を表す値として受け取る。第 8.4 節）。
+
+| 結果 | 扱い |
+|---|---|
+| 成功 | エントリを除去して次へ。最後のエントリなら reconcile トリガ（第 8.6 節）を発火する |
+| 版ずれの reject | flusher を停止し、既存の版ずれ文言（第 8.4 節）をステータス行へ出す。キューは保持し、再読み込みで復旧する |
+| それ以外の reject（通信断など） | 同じエントリを先頭に留めたまま、1s から 2 倍ずつ上限 30s の間隔で再送し続ける |
+| `TaskErrorCode` を持つ失敗（防波堤） | 残キューを全破棄し、エラー文言をステータス行へ出したうえで reconcile トリガを発火してサーバー正へ収束させる。破棄した Op の並べ直し（rebase）はしない |
+
+キューの実体（未送信列・in-flight・停止フラグ・flusher）は React コンポーネントではなく `use-op-queue.ts` のモジュールスコープに置く。
+`/trash` へのクライアント遷移で `OutlineShell` が unmount されても送信は続き、戻ってきた 2 代目のフックが空のキューを作って旧 flusher と並走する（FIFO が崩れる）ことも起きない。
+フックは `useSyncExternalStore` による未同期件数（`pendingCount`、in-flight を含む）と停止フラグの購読、通知コールバックの引き渡し、`pendingCount > 0` の間だけの `beforeunload` 登録（未送信のまま離脱しようとしたときの確認）だけを担う。
+未同期件数はステータス行が「未同期 N 件」として常設表示する。
+未送信 Op の localStorage への退避は行わない（2026-08-28 の判断。ブラウザ離脱時の喪失窓は beforeunload の確認で受け、古い Op の再送とサーバー状態の衝突を解く再送時整合の設計を持たないことを優先した）。
+
 #### undo / redo
 
-Server Action が成功で確定した Op だけを対象に、undo（`u`）/ redo（`U`）の履歴スタックを持つ（第 6.1 節）。
+クライアント state へ適用した Op を対象に、undo（`u`）/ redo（`U`）の履歴スタックを持つ（第 6.1 節）。
+履歴は適用と同時（`runOp` の手順 6）に積み、Server Action の成功を待たない。
+待つ形にすると、低速回線では操作直後の `u` が応答まで効かなくなるためである。
 履歴（`features/outline/lib/undo-history.ts`）は `{ label, undoOps, redoOps }` のエントリを積む純粋なスタック操作である。
 新しい操作が確定すると redo スタックは破棄する（vim に倣う）。
 
-undo / redo の再実行は `runOpsForHistory` が担い、Op 列を順に「楽観適用 → `callServerForOp`」で流す。
-通常操作と同じ `callServerForOp` を通るため、undo の再実行だけが別の Server Action へ向かうことはない。
-1 つでも失敗すればステータス行へエラーを出し、そのエントリは反対側のスタックへ積まずに破棄する。
+undo / redo の再実行は `runOpsForHistory` が担い、Op 列を順に「事前バリデーション → 適用 → enqueue」で流す同期処理である。
+2 Op 目以降のバリデーションとスナップショットは直前の Op を適用した後の一覧で行うため、手元でも同じ適用を重ねながら進める。
+通常操作と同じ `callServerForOp`（キューの flusher が呼ぶ）を通るため、undo の再実行だけが別の Server Action へ向かうことはない。
+途中の Op がバリデーションで弾かれたらそこで打ち切ってステータス行へエラーを出し、そのエントリは反対側のスタックへ積まずに破棄する。
 
 `softDelete` の undo は `restore` 単独ではなく `[restore(snapshot), move(元の parent_id・position へ)]` の 2 Op 列である。
 `restore_task` RPC は actual sibling group の末尾へ position を移す仕様であり、削除前の元の位置には戻さないためである。
-`move` の楽観適用は old/new の parent_id・position が一致する（= snapshot の値）ときに隙間詰め・隙間空けが互いに打ち消して no-op になるため、ローカルの楽観表示は `restore` 直後の snapshot 位置のまま変わらない。
+`move` の適用は old/new の parent_id・position が一致する（= snapshot の値）ときに隙間詰め・隙間空けが互いに打ち消して no-op になるため、ローカルの表示は `restore` 直後の snapshot 位置のまま変わらない。
 サーバー側だけ `restore_task` の末尾 → 元の位置へ `move_task` RPC で収束する。
 
 VISUAL の一括完了（`completeSelection`）は `runOp` を通らない。
-選択範囲の各タスクへ順に `completeTask` を呼び、成功した taskId 群を 1 エントリへまとめて履歴へ積む。
-`runOp` は 1 Op = 1 エントリを前提とするため、部分成功を 1 エントリで表すこの操作だけ自前のループを持つ。
+選択範囲の各タスクを 1 件ずつ事前バリデーションに通し、通過した分だけ適用と enqueue を行って、その taskId 群を 1 エントリへまとめて履歴へ積む。
+バリデーションは直前までの適用を重ねた一覧で行う（選択内の先行する complete が依存先を解く場合を正しく通すため）。
+`runOp` は 1 Op = 1 エントリを前提とするため、部分通過を 1 エントリで表すこの操作だけ自前のループを持つ。
 もう 1 つ `runOp` を通らないのは `create` であり、理由は本節後半で述べる。
 
 履歴の対象は `OutlineOp` の対象操作と一致する。
@@ -534,69 +581,35 @@ VISUAL の一括完了（`completeSelection`）は `runOp` を通らない。
 3 つとも「値が変わっていなければ何もせず、変わっていれば `runOp` へ渡す」という同じ形である。
 タイトルの窓口は行内タイトル編集（`i` / `I` / `a` / `A`、第 6.4 節）と共有しており、どちらの経路でも同じ `updateTitle` Op を通る。
 
-楽観適用が同期的に効くため、`DetailPane` は Server Action の応答を待たずに編集領域を畳んでよい。
+適用が同期的に効くため、`DetailPane` はそのまま編集領域を畳んでよい。
 「保存中」のブロッキング表示・disabled は置かない。
 
 依存関係（`task_dependencies`）の追加・削除は `OutlineOp` の対象外である。
 `DependencySection` が `addDependency` / `removeDependency` を直接呼んで応答を待ち、失敗時は `dependency-error.ts` が組み立てた日本語文言を自身の中に表示する。
 
-#### 楽観 `create` と tempId
+#### `create` とクライアント採番の id
+
+`create` の行 id はクライアントが `crypto.randomUUID()` で採番し、そのまま実 PK として `createTask` Server Action の INSERT に使う（`features/task/actions/create-task.ts`）。
+行は最初から最後まで同じ id で生き続けるため、一時 id から実 id への付け替えという概念自体が無い。
+キューは FIFO の直列送信なので、「`create` より先に、その行への `move` や `updateTitle` がサーバーへ届く」ことも構造的に起きない。
+作成直後の行はカーソルを合わせてすぐ行内タイトル編集・構造操作・undo/redo の対象にでき、`createTask` の応答を待つ理由がどこにも無い。
 
 `create` は `runOp` を通らないもう 1 つの例外である。
-`invertOutlineOp` は `create` に対して `null` を返す。
-逆操作（作成した行を消す `softDelete`）が対象とする実 id は Server Action の応答まで分からず、Op と実行前のスナップショットだけからは組み立てられないためである。
-そのため `createSibling` が自前のパイプラインを持ち、settle 後に実 id で `{ undoOps: [softDelete(実 id)], redoOps: [restore(実 id, snapshot)] }` を積む。
-この `snapshot` は `applyOutlineOp` を副作用なしで直接呼び、作成直後の行を先読みして得る。
-
-`create` は `tempId`（`crypto.randomUUID()`）で楽観行を即時挿入し、カーソルも `tempId` へ合わせる。
-Server Action 成功後、実 id へ `setCursor` し直す。
-
-`tempId` はまだ実 DB に存在しないため、確定前にこれを対象とする構造操作・undo/redo は行わない。
-`use-outline-mutations.ts` が `tempId` の集合を `useRef` で保持し、各ハンドラの入口で除外したうえで、settle（成功・失敗のいずれも）で集合から除く。
-
-tempId から実 id への付け替えは「同一論理行の id 変更」であり、「別の行へ移った」とは区別する必要がある。
-区別しないと、付け替えの瞬間に行内タイトル編集や `DetailPane` の下書きが破棄される。
-対応表の型と操作は `pending-create-registry.ts` が持つ（実体は `OutlineShell` の `useRef`。理由は次の項）。
-`use-pending-create.ts` がレンダー中の state 調整（カーソル移動の判定 → 対応表の剪定 → 表示行消失の判定）をこの順序で行う。
-`DetailPane` へは対応表の読み取り専用ビューだけを渡し、`temp-id-renames.ts` の `isSameLogicalRow` で同じ判定をさせる。
-
-settle 前に `Enter` / `Esc` でタイトルが確定された場合は、その値を保留キューへ置く。
-settle 後に実 id で通常のパイプライン（楽観適用 → `updateTask` → 履歴）へ流す。
-`create` 自体が失敗した場合は保留分を破棄する。
-
-#### settle から revalidate 到着までの窓
-
-settle で id が実 id へ切り替わっても、一覧の側はしばらく実 id の行を持たない。
-`useOptimistic` の楽観 op は `startTransition` の完了で捨てられる一方、サーバー由来の一覧に実 id の行が現れるのは `revalidatePath` による RSC の再描画が届いてからだからである。
-この窓の間、作成した行はどの一覧にも存在せず、次の連鎖でフォーカスと編集中の下書きが失われていた（Issue #60）。
-
-1. 行が消えるため、カーソル（実 id）が可視行の集合に含まれなくなる
-2. ストアの `setVisibleTaskIds` が「カーソルが可視行に無い」と見てカーソルを先頭行へ寄せる（この clamp は折りたたみ・絞り込みで行が消えたときに要る）
-3. カーソルが動いたことで、上記のレンダー中の state 調整が行内タイトル編集を畳む。`input` が unmount され、フォーカスが `body` へ落ちる
-
-`OutlineShell` は木を組み立てる前に `mergeSettledRows`（`pending-create-registry.ts`）を通し、この窓を埋める。
-まだ生きている `tempId` の楽観行は実 id 名義に読み替え、楽観行も実 id の行も無くなった分は settle 時に預けたスナップショット（undo 履歴のために先読みしてある「作成直後の行」と同じもの）で埋める。
-実 id の行がサーバー由来の一覧に現れた時点で、対応表もスナップショットも剪定する。
-
-行の React `key` には、id ではなく「実 id → 最初の tempId」で解決した論理キーを使う（`resolveRowKey`）。
-id をそのまま `key` にすると、付け替えの瞬間に行のサブツリーが作り直される。
-行内タイトル編集中であれば `input` も作り直され、`attachInput`（第 6.4 節）が改めて `setSelectionRange` を行うためキャレットが `caret` の指定位置へ巻き戻る（Issue #62）。
-この対応（`rowKeys`）だけは剪定しない。剪定すればその時点で `key` が実 id へ戻り、避けたい作り直しがそこで起きるためである。
-保持量はページのセッション中に作成した行 1 件あたり 1 エントリに収まる。
-
-対応表の実体を `use-pending-create.ts` ではなく `OutlineShell` が持つのはこのためである。
-差し込みは木の組み立てより前に走る必要があり、木の組み立て後に呼ぶ `use-pending-create.ts` では間に合わない。
-剪定の判定には差し込む前の一覧を使う。差し込んだ後の一覧で判定すると、自分が差し込んだ行を「現れた」と見て即座に剪定し、次のレンダーで行がまた消える。
+履歴の redo を「元の Op の再実行」にする `runOp` の形では表せない。
+undo（`softDelete`）の後に `create` を再送すると、同一 id の INSERT がサーバーの一意制約に当たるためである。
+そのため `createSibling` が自前で `{ undoOps: [softDelete(id)], redoOps: [restore(id, snapshot)] }` を積む。
+この `snapshot`（作成直後の行）は `applyOutlineOp` を副作用なしで直接呼んで先読みする。
 
 ### 5.3 派生値
 
 `is_blocked` は `app_tasks` View 側で算出される派生値であり(req.md §44, §75 原則 2)、クライアントで再計算しない。
 表示順序は View が提供する `sort_path` にそのまま従い(req.md §46)、クライアント側で独自にソートし直さない。
 
-例外として、楽観的更新中に限り「暫定的な blocked 解除」の計算をクライアント側で行う。
-あるタスクを `completeTask` で楽観的に完了させた瞬間、そのタスクに依存する他タスクの `is_blocked` は本来サーバー側の再計算を待つ必要があるが、revalidate 完了までの間 UI 上は blocked のままに見えてしまう。
-これを避けるため、`useOptimistic` のリデューサ内でのみ「完了させたタスク ID を depends_on に持つタスクの `is_blocked` を `false` として一時的に描画する」計算を行う。
-この暫定値は revalidate 完了後にサーバー由来の値へ必ず置き換わり、正とはしない。
+例外として、Op をクライアント state へ適用する間の暫定値の計算はクライアント側で行う。
+`applyOutlineOp` は 1 Op を適用するたびに、`app_tasks` View と同じ意味論で `sort_path` / `effective_parent_id` / `is_blocked` を全行再計算する（第 5.2 節の normalize）。
+あるタスクを完了させた瞬間に、そのタスクへ依存する他タスクの `is_blocked` が手元で `false` に変わるのはこの計算による。
+この暫定値は reconcile（第 8.6 節）でサーバー由来の値へ必ず置き換わり、正とはしない。
+事前バリデーション（第 5.2 節）の `TASK_BLOCKED` 判定もこの暫定値を読むため、View の意味論と normalize の意味論が一致していることが両者の前提になる（`outline-ops.test.ts` と pgTAP が両側を固定する）。
 
 `DetailPane` の `BlockedReasonBar` が表示する「どのタスクに blocked にされているか」というテキストも同様にクライアント側の導出値だが、これは `is_blocked` フラグの正当性を左右する計算ではなく、`task_dependencies`(req.md §69) と手元の `app_tasks` 一覧を突き合わせて表示用の文言を組み立てるだけの提示ロジックである。
 この計算が古くなった場合の影響は表示文言のずれにとどまり、`is_blocked` 自体の信頼性には影響しない。
@@ -623,7 +636,7 @@ NORMAL モード。
 | `}` | 次の兄弟へ移動（子孫をスキップ） | 向きが逆であること以外は `{` と同じ |
 | `C-d` | カーソルを 10 行下へ | `visibleTaskIds` の添字を +10 する。画面の高さは実測せず固定行数とする（予測可能性と実装コストを優先する判断）。Chrome のブックマーク追加と衝突するが `preventDefault` で奪う |
 | `C-u` | カーソルを 10 行上へ | `visibleTaskIds` の添字を -10 する。Chrome のソース表示と衝突するが `preventDefault` で奪う |
-| `x` | 完了 | `complete` Op を `runOp` へ流す（第 5.2 節）。blocked の場合 `TASK_BLOCKED` を受けてステータス行へ原因タスク名を含む文言を出し、DAG の原因ノードを点滅させる |
+| `x` | 完了 | `complete` Op を `runOp` へ流す（第 5.2 節）。blocked の場合は事前バリデーションが `TASK_BLOCKED` で弾き、ステータス行へ原因タスク名を含む文言を出して DAG の原因ノードを点滅させる |
 | `o` | 新規タスク作成（下） | カーソル行の下に同じ actual parent の兄弟として `createTask`。挿入位置は `createTask` が兄弟グループ末尾へ作ったうえで `move_task` RPC(req.md §54) へ委ねる（兄弟の position をずらす更新を 1 トランザクションにまとめるため） |
 | `O` | 新規タスク作成（上） | カーソル行の上に同じ actual parent の兄弟として `createTask`。挿入位置の扱いは `o` と同じ |
 | `i` / `I` | タイトルの行内編集（先頭） | カーソル行のタイトルを行内編集する。キャレットは先頭（第 6.4 節） |
@@ -641,7 +654,7 @@ NORMAL モード。
 | `dd` | ゴミ箱へ移動 | `softDelete` Op。連続 2 打鍵で確定する（vim の `dd` に倣う。pending key 方式、第 6.2 節） |
 | `/` | 検索モードへ | 第 5.1 節参照 |
 | `?` | キーバインドのヘルプを表示 | ヘルプオーバーレイを開く。表示内容は keymap テーブルから生成する（第 6.3 節） |
-| `u` | undo | 確定済み Op の履歴スタックの末尾を取り消す（第 5.2 節）。`req.md` に undo の記載はなく、対象は `OutlineOp` の対象操作に限る |
+| `u` | undo | 適用済み Op の履歴スタックの末尾を取り消す（第 5.2 節）。`req.md` に undo の記載はなく、対象は `OutlineOp` の対象操作に限る |
 | `U` | redo | `u` で取り消した操作をやり直す（第 5.2 節）。Shift 付きだが `event.key` へ既に反映されているため `u` とは別トークンになる（第 6.2 節） |
 
 行内タイトル編集中に効くキーは、テーブル上では NORMAL の `run` を持たないドキュメント専用エントリとして持つ（第 6.2 節）。
@@ -656,7 +669,7 @@ VISUAL モード。
 | キー | 動作 | 備考 |
 |---|---|---|
 | `j` / `k` | 選択範囲を拡張 | anchor から cursor までを選択とする |
-| `x` | 範囲一括完了 | 選択された各タスクへ順に `completeTask` を実行し、「N件中M件を完了」をステータス行の情報表示へ出す（第 5.2 節） |
+| `x` | 範囲一括完了 | 選択された各タスクを順に事前バリデーションへ通し、通過分を適用・enqueue して「N件中M件を完了」をステータス行の情報表示へ出す（第 5.2 節） |
 | `Esc` | NORMAL へ戻る | 選択を解除 |
 
 SEARCH モード。
@@ -800,7 +813,7 @@ vim の `i` / `a` は行内のカーソル桁を基準にするのに対し、�
 空文字（トリム後）は DB 制約 `tasks_title_not_blank` の CHECK 違反になり `TaskErrorCode` へ変換できないため、送信前にクライアント側で弾いてインラインにエラーを出す（第 8.2 節の `DetailPane` と同じ理由）。
 blur 時に空文字だった場合は保存できないため取り消し扱いとし、元のタイトルへ戻す。
 確定時に値が変わっていなければ `updateTask` を呼ばずに編集だけを畳む（blur 確定で無駄な Server Action が飛ぶのを防ぐ）。
-確定した新しいタイトルは `useOptimistic`（第 5.2 節）でも重ねる。revalidate が届くまでの間、確定直後の行が編集前のタイトルへ一瞬戻って見えるのを防ぐためである。
+確定した新しいタイトルは `updateTitle` Op としてクライアント正 state へ同期適用される（第 5.2 節）ため、確定した瞬間に行へ反映される。
 
 編集状態は `OutlineShell` のローカル state が `{ taskId, caret }`（null 許容）という 1 個の値として持つ。
 `OutlineMode` に `INSERT` を足さず、Zustand ストアにも置かない。
@@ -869,7 +882,6 @@ IME 変換確定中の `Esc`（`event.nativeEvent.isComposing`）は、いずれ
 `OutlineShell` は `cursorTaskId` の変化を見て、カーソル行へフォーカスを移す。
 移すのはフォーカスが行の要素にあるときだけで、それ以外（行内編集の `input`、`DetailPane` の `textarea`、ヘッダのボタン、`body`）からは奪わない。
 行内編集中の `input` は行の内側にあるが `role="option"` を持たないため、この条件で区別できる。
-奪ってはならない代表例が、`o` で作った行のタイトルを行内編集している最中の `createTask` の settle である（tempId → 実 id の付け替えで `cursorTaskId` が変わる。第 5.2 節）。
 
 行（`OutlineRow`）にキーボードのローカルハンドラは置かない。
 キーの担当は keymap テーブル（第 6.1 節）と、入力欄のローカルハンドラ（第 6.2 節が挙げる、`isEditableTarget` で dispatcher が素通しする文脈）の 2 つだけである。
@@ -926,7 +938,7 @@ app/login/page.tsx                    [Server Component]
 親（`DetailPane`）が配るのは「別のタスクへ切り替わったので初期化せよ」という合図（`resetToken`）だけである。
 タイトル・期日・説明の 3 節はこの値を `key` に混ぜて作り直し、進行中の通信フラグを持つ `DependencySection` だけは値として受け取って初期化対象を自分で選ぶ。
 
-データ取得と初期描画は Server Component（`page.tsx` 系）に閉じ、以降のインタラクション（キーボード・DnD・楽観更新・SVG 描画）を担う部分はすべて Client Component とする。
+データ取得と初期描画は Server Component（`page.tsx` 系）に閉じ、以降のインタラクション（キーボード・DnD・Op の適用・SVG 描画）を担う部分はすべて Client Component とする。
 `OutlineShell` を境界コンポーネントとし、これより下は "use client" を再宣言しない（App Router の Client Component 境界の伝播に従う）。
 
 PC 幅の 2 ペインの横幅比（左ペイン：右ペイン）は、既定値を 60%：40% とし、ドラッグで変更できる。
@@ -935,7 +947,7 @@ PC 幅の 2 ペインの横幅比（左ペイン：右ペイン）は、既定�
 比率は CSS 変数（`--left-pane-percent`）経由で `md:flex-[0_0_var(--left-pane-percent)]` へ渡す。
 `md:` 接頭辞の Tailwind responsive utility は `@media` でのみ効くため、この仕組みのままモバイル幅では素の `flex-1`（全幅）を維持し、2 ペイン用のドラッグ操作もモバイル幅には影響しない。
 確定した比率は localStorage（キー `dagdo.pane-ratio`）へ保存し、次回訪問時に復元する。
-SSR とのハイドレーション不整合を避けるため、初期レンダリングは常に既定値 60% とし、復元は mount 後の `useEffect` で行う（第 5.2 節の `useOptimistic` の初期値の扱いと同じ考え方）。
+SSR とのハイドレーション不整合を避けるため、初期レンダリングは常に既定値 60% とし、復元は mount 後の `useEffect` で行う。
 ドラッグ中は `body` へ `user-select: none` を当ててテキスト選択を防ぎ、ドラッグ終了で必ず外す。
 `PaneDivider` は dnd-kit の `DndContext`（行の並べ替え、`OutlinePane` 内。第 9 章）の外側（`OutlineShell` 直下）に置き、行の dnd 操作とポインタ操作が競合しないようにする。
 ドラッグ中は左ペイン幅の変化に追従して `DependencyRail` の `ResizeObserver` コールバックが発火するが、これは第 7.2 節のトレーリングデバウンス（100ms）にそのまま従う。
@@ -953,12 +965,12 @@ SSR とのハイドレーション不整合を避けるため、初期レンダ�
 - マウント時（初回描画）: 間引きなしで即時に描画する
 - スクロールイベント時: `requestAnimationFrame` によるスロットリングとし、フレームあたり 1 回に制限する
 - `ResizeObserver` によるコンテナサイズ変化時（主にウィンドウリサイズのバースト対策）: トレーリングデバウンス 100ms を入れる
-- 折りたたみ開閉などアプリ操作起因の単発変化、および `revalidatePath` 後の props 更新・楽観的更新の適用/巻き戻しなどツリー構造が変化した時: デバウンスを挟まず即時に再計算する
+- 折りたたみ開閉などアプリ操作起因の単発変化、および Op の適用・reconcile による props 採用などツリー構造が変化した時: デバウンスを挟まず即時に再計算する
 
 この 3 段構成は、発火源ごとに連続発火の性質が異なることに基づく。
 スクロールは高頻度かつ滑らかな追従が要求されるため、rAF で 1 フレームに 1 回へ抑える。
 ウィンドウリサイズは短時間に多数の `ResizeObserver` コールバックがバースト発生するため、トレーリングデバウンスで最後の 1 回だけを処理し、無駄な再計算を避ける。
-一方、折りたたみ開閉やツリー構造変化はユーザー操作や revalidate に対応した単発のイベントであり、間引く対象となる連続発火が発生しないため、デバウンスを挟まず結果を即時に反映する。
+一方、折りたたみ開閉やツリー構造変化はユーザー操作や reconcile に対応した単発のイベントであり、間引く対象となる連続発火が発生しないため、デバウンスを挟まず結果を即時に反映する。
 
 折りたたみ操作はコンテナの高さ変化を伴うため `ResizeObserver` のコールバックも副次的に発火しうるが、当該コールバック経由の再計算は上記のトレーリングデバウンス（100ms）に従わせる。
 即時反映が必要なのは、折りたたみ操作のイベントハンドラ自身が明示的に呼び出す再計算であり、`ResizeObserver` 経由の再計算とは呼び出し経路を分ける。
@@ -992,7 +1004,7 @@ OutlineShell へ props として渡す (initialTasks / initialDependencies)
 関連付けはアプリケーション側（`build-tree.ts` / `depends-on-tasks.ts` / `compute-local-subgraph.ts`）で行う。
 
 木の組み立ては RSC ではなく `OutlineShell` が行う。
-楽観適用後の一覧（`optimisticTasks`）から毎レンダー組み直す必要があり、サーバー側で一度組んだ結果は楽観適用のたびに使えなくなるためである。
+Op 適用後のクライアント正 state（`tasks`）から毎レンダー組み直す必要があり、サーバー側で一度組んだ結果は Op を適用するたびに使えなくなるためである。
 
 読み取りは `app_tasks` View から全件を取る（`queries.ts` の `.select("*")`）。
 ページネーションは持たない(req.md §68)。
@@ -1002,20 +1014,22 @@ OutlineShell へ props として渡す (initialTasks / initialDependencies)
 
 ```text
 1. keydown ("x", NORMAL) → dispatchKeymap → handlers.completeCursor
-2. runOp({ type: "complete", taskId }, "完了", onError) (第 5.2 節)
+2. runOp({ type: "complete", taskId }, "完了", onValidationError) (第 5.2 節)
    ↓ invertOutlineOp → undoOps = [{ type: "reopen", taskId }]
-3. applyOptimisticAction: completed_at を楽観的に埋める
-   + 依存先が taskId であるタスクの is_blocked を暫定 false に (第 5.3 節の例外)
-4. callServerForOp → completeTask({ taskId })
-5a. 成功
-    - Server Action 内で revalidatePath を呼ぶ (req.md §71)
-    - RSC が再取得した実データで useOptimistic のオーバーレイが解消される
+3a. 事前バリデーション通過 (対象が blocked でない)
+    - applyOp: completed_at を同期的に埋める
+      + 依存先が taskId であるタスクの is_blocked を暫定 false に (第 5.3 節)
+    - opQueue.enqueue: 直列 Op キューへ積む (UI はここで完結し、送信は待たない)
     - statusError を null へ戻し、undo 履歴へ { label: "完了", undoOps, redoOps: [op] } を積む
-5b. 失敗 (TASK_BLOCKED)
-    - useOptimistic のオーバーレイは transition の終了とともに巻き戻る
+3b. 事前バリデーション失敗 (TASK_BLOCKED)
+    - 適用も enqueue もしない
     - findBlockingCause で原因タスクを 1 件求め、StatusLine へ
       "TASK_BLOCKED — <原因タスク名> が未完了のため完了できません" を出す
     - store.flashTask(原因タスク ID) → DagPanel が該当ノードを点滅表示
+4. (背後) flusher が callServerForOp → completeTask({ taskId }) を送信する
+   - 成功でエントリを除去。キューが空になれば reconcile トリガ (第 8.6 節)
+   - 失敗の扱いは第 5.2 節の直列 Op キューの表のとおり
+     (通信断は backoff 再送、版ずれは停止、防波堤ヒットは残キュー破棄 + reconcile)
 ```
 
 エラー通知はステータス行（`StatusLine`）で行う。
@@ -1062,35 +1076,35 @@ SQLSTATE `ET001`〜`ET007` は migration が定める契約であり（`supabase
 Server Action の Promise そのものが reject する場合はこの契約の外側にあり、`ActionResult` の値は返らない。
 reject の原因は、デプロイによる Server Action ID の版ずれ、サーバー側の未捕捉例外、ネットワーク断である。
 
-書き換え操作の await は `startTransition` の中にあるため（第 5.2 節）、reject をそのままにすると例外が transition の外へ抜け、最寄りの error boundary へ届く。
-1 操作の失敗で画面全体がエラー表示へ切り替わっていたのはこのためである(Issue #66)。
-`startTransition` の中の未処理の例外が最寄りの error boundary へ上がることは Next.js 同梱ドキュメント（`node_modules/next/dist/docs/01-app/01-getting-started/10-error-handling.md`）が明示している。
-
-transition の外（`TrashRow` / `DependencySection` のイベントハンドラ）でも reject の素通しは害になる。
-React のエラー境界はイベントハンドラの例外を捕まえないため画面は保たれるが、進行中フラグ（`isRestoring` / `isAddingDependency` など）を戻す行を飛び越えるため、「復元中…」の disabled 表示のまま操作できなくなる。
+reject の素通しは 2 つの経路で害になる。
+アウトライン側では、Server Action の await が直列 Op キューの flusher（第 5.2 節）に集約されており、reject をそのままにすると flusher のループが例外で止まり、以降の Op が送信されないまま残る。
+イベントハンドラ側（`TrashRow` / `DependencySection`）では、React のエラー境界がイベントハンドラの例外を捕まえないため画面は保たれるが、進行中フラグ（`isRestoring` / `isAddingDependency` など）を戻す行を飛び越えるため、「復元中…」の disabled 表示のまま操作できなくなる。
 
 `features/task/lib/run-server-action.ts` の `runServerAction` で await を包み、reject を失敗を表す値へ変換する。
 型は `features/task/lib/action-rejection.ts` が持つ。
 
 ```typescript
-type ActionRejection = { ok: false; rejected: true; message: string };
+type ActionRejection = { ok: false; rejected: true; message: string; isVersionSkew: boolean };
 type ActionOutcome<T = void> = ActionResult<T> | ActionRejection;
 ```
 
 `ActionRejection` は `code` を持たない。
 `TaskErrorCode` は migration が定める SQLSTATE `ET001`〜`ET007` と 1 対 1 に対応する契約であり（第 8.3 節）、そこへサーバーへ届かなかった失敗を足すとこの対応が崩れるためである。
+`isVersionSkew` は reject の原因が版ずれかどうかの判別フラグであり、flusher の停止判断（第 5.2 節）が読む。
 
-置き場所を `outline` ではなく `task` feature にしているのは、アウトライン（`use-outline-mutations.ts`）・ゴミ箱（`TrashRow`）・詳細ペイン（`DependencySection`）の 3 つがこの失敗形を要り、feature 間の import を一方向に保つ必要があるためである（第 4 章）。
-Server Action を await する箇所は全部で 9 箇所あり、すべて `runServerAction` を通る。
+置き場所を `outline` ではなく `task` feature にしているのは、アウトライン（キューの flusher）・ゴミ箱（`TrashRow`）・詳細ペイン（`DependencySection`）の 3 つがこの失敗形を要り、feature 間の import を一方向に保つ必要があるためである（第 4 章）。
+Server Action を await する箇所は全部で 5 箇所あり、すべて `runServerAction` を通る。
 
-- `use-outline-mutations.ts` の 5 箇所（`runOp` / `completeSelection` / `createSibling` の作成とタイトル確定 / `runOpsForHistory`）
+- `use-op-queue.ts` の 1 箇所（flusher。アウトラインの全 Op がここへ集約される）
 - `TrashRow` の 2 箇所（復元・完全削除）
 - `DependencySection` の 2 箇所（依存先の追加・削除）
 
-変換後は例外が transition の外へ出ないため、settle は `ok: false` のときと同じ経路を通る。
-`useOptimistic` のオーバーレイの巻き戻し（第 8.2 節 5b）も、`createSibling` の後始末（`tempId` 集合からの除去と保留タイトルの破棄、第 5.2 節）も、失敗の種類によらず同じ分岐で行われる。
+reject への応答は経路で異なる。
+flusher は版ずれ（`isVersionSkew`）なら停止して版ずれ文言をステータス行へ出し、それ以外（通信断など）なら文言を出さずに backoff で再送し続ける（第 5.2 節の表）。
+再送で足りる失敗を毎回ユーザーへ見せる代わりに、未同期件数の常設表示（第 5.2 節）が「まだ届いていない」ことを静かに伝える。
+`TrashRow` / `DependencySection` は応答を待つ構造なので、どちらの reject も `message` をその場に表示する。
 
-表示文言は reject の理由を 2 つに分けて組み立てる。
+表示文言は reject の理由を 2 つに分けて組み立てる（`action-rejection.ts`）。
 
 | 判別 | 表示文言 |
 |---|---|
@@ -1119,11 +1133,8 @@ MPA action ではサーバー側が `Failed to find Server Action. This request 
 表示先は各画面の既存の仕組みに合わせる。
 アウトラインはステータス行、`TrashRow` は行内の `error`、`DependencySection` は節内の `dependencyError` である。
 後の 2 つは `TaskErrorCode` を前提とした文言の組み立て（`formatDependencyError`）を通せないため、reject 由来の日本語文言をそのまま同じ場所へ出す。
-
-VISUAL の一括完了（`completeSelection`）だけは、個々の失敗を「N件中M件を完了」という件数で伝える（第 5.2 節）。
-ただし reject 由来の失敗が 1 件でもあれば、件数に加えてその文言をステータス行へも出す。
-版ずれやセッション失効は選択範囲の全件を落とすため、件数だけでは次に何をすればよいか（再読み込み）が伝わらないためである。
-`StatusLine` は `errorMessage` を `infoMessage` より優先して表示する（第 8.2 節）。
+`StatusLine` は `errorMessage` を `infoMessage`（VISUAL の一括完了の件数）より優先して表示する（第 8.2 節）。
+版ずれ停止中は、後続の操作の成功でこの文言を消さない（再読み込みの導線を出し続けるため。`use-outline-mutations.ts` の `clearStatusError`）。
 
 エラー境界そのものも `app/error.tsx` と `app/global-error.tsx` に置く。
 これが無いと、上記以外の描画時の失敗が Next.js 組み込みの全画面エラーページ（英語の「This page couldn't load / A server error occurred.」）に落ちる。
@@ -1138,34 +1149,47 @@ VISUAL の一括完了（`completeSelection`）だけは、個々の失敗を「
 
 ```typescript
 export const completeTask = defineTaskAction<{ taskId: string }>(
-    ["/"],
     async ({ client, userId }, { taskId }) => await client.from("tasks").update({ completed_at: new Date().toISOString() }).eq("id", taskId).eq("user_id", userId),
 );
 ```
 
-`defineTaskAction` は revalidate 対象パスの配列と本体を受け取り、次を行う関数を返す。
+`defineTaskAction` は本体と、省略可能な revalidate 対象パスの配列を受け取り、次を行う関数を返す。
 
 1. `getSessionUserId()` でセッションから `userId` を取得する（クライアント入力の `user_id` は信用しない。`docs/auth-design.md` §7.4）
 2. `createAppClient({ userId })` でリクエスト毎の Supabase client を生成する（第 4 章）
 3. 本体を `{ client, userId }` と引数で呼ぶ
 4. `error` があれば `mapDbErrorOrThrow` で `TaskErrorCode` へ変換し `{ ok: false, code, message }` を返す
-5. 成功時のみ対象パスへ `revalidatePath` し、`{ ok: true, data: undefined }` を返す
+5. 成功時のみ対象パス（あれば）へ `revalidatePath` し、`{ ok: true, data: undefined }` を返す
 
 本体は `{ error }` を持つ値を返せばよい。
 supabase-js の query builder と `rpc` の戻り値がそのまま条件を満たすため、本体は Supabase 呼び出し 1 文で書ける。
 
-revalidate 対象は操作が影響する画面で決める。
-アウトラインだけが変わる 8 本は `["/"]`、ゴミ箱の中身も変わる `softDeleteTask` / `restoreTask` / `permanentlyDeleteTask` は `["/", "/trash"]` である。
+Op キューを通る Action は `revalidatePath` を呼ばない（write-behind 化、Issue #70）。
+Op 単位で revalidate すると全件ペイロードの RSC 再取得が操作のたびに走り、低速回線ではその往復が積み上がるためで、鮮度はクライアント側の reconcile トリガ（第 8.6 節）が担保する。
+revalidate 対象パスを渡すのはキュー対象外の依存編集 2 本（`addDependency` / `removeDependency`、いずれも `["/"]`）だけである。
 
 11 本のうち 10 本がこの高階関数を通る。
-`createTask` だけは個別実装であり、理由は `defineTaskAction` の前提を 3 点とも満たさないことである。
+`createTask` だけは個別実装であり、理由は `defineTaskAction` の前提を 2 点とも満たさないことである。
 
 - DB 呼び出しが 3 つある（兄弟件数の取得・INSERT・位置指定時の `move_task`）
-- 位置調整が失敗した場合は作成自体が成功しているため、`revalidatePath` してから失敗を返す
 - 成功時に作成した `{ id }` を返す（`defineTaskAction` の戻り値は `ActionResult<void>` に固定される）
 
 `"use server"` モジュールから高階関数の戻り値を `export const` する形が Server Action として登録されることは、Next.js 16.3.0 において `.next/server/server-reference-manifest.json` を確認する実測で確かめている（11 本すべて登録され、node エントリ 13 が `main` と一致する）。
 同梱ドキュメント（`node_modules/next/dist/docs/01-app/03-api-reference/01-directives/use-server.md`）は `export async function` 形しか例示していないため、この点は文書ではなく実測に拠る。
+
+### 8.6 reconcile（サーバー正への収束）
+
+クライアント正 state（第 5.2 節）は、次の 3 つのタイミングでクライアントから `router.refresh()` を打ってサーバーの現況を取り直す（`use-outline-mutations.ts`）。
+
+1. キューが空になった瞬間（flusher が最後のエントリを ack したとき。`use-op-queue.ts` の `onDrained`）
+2. `visibilitychange` で visible へ復帰したとき。別タブ・別デバイスでの変更を取り込む口であり、キューに未同期の Op がある間はリスナ自体を登録せず打たない
+3. 防波堤ヒットで残キューを破棄した直後（`onDiscard`。破棄した Op ぶんだけ手元がサーバーより進んでいるため、取り直しで巻き戻す）
+
+届いた props を state へ採用するかは reconcile ゲート（第 5.2 節）が判断する。
+1 と 3 は発火時点でキューが空なので必ず採用され、2 の直後に新しい操作が入った場合だけゲートが見送る（次のキュー空化で取り直す）。
+
+ゴミ箱ページの鮮度もこの枠組みで保たれる。
+`TrashRow` の復元・完全削除は成功時に自前で `router.refresh()` を打ち、`/trash` ページ自体は動的レンダリング（`getSessionUserId()` が cookie を読む）かつ Router Cache の動的ページの staleTime が 0（Next.js 16.3.0 の既定。`node_modules/next/dist/docs/01-app/03-api-reference/05-config/01-next-config-js/staleTimes.md`）のため、ページ遷移のたびにサーバーから取り直される。
 
 ---
 
@@ -1263,13 +1287,15 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 実行は `make fe-test`（`npm test` = `vitest run`）であり、品質ゲート `make check` の 3 段目に入る（第 3.6 節）。
 
 テストは対象と同じディレクトリに置く。
-主な対象は `lib/` 配下の純関数であり、次の 27 ファイル・339 件がある。
+主な対象は `lib/` 配下の純関数であり、次の 27 ファイル・355 件がある。
 
 | 対象 | テストファイル |
 |---|---|
 | 表示順フラットリスト構築・折りたたみ反映 | `outline/lib/build-tree.test.ts` |
 | dnd フラット化と新 parent・position の算出 | `outline/lib/flatten-for-dnd.test.ts` |
-| `OutlineOp` の楽観適用と normalize | `outline/lib/outline-ops.test.ts` |
+| `OutlineOp` の適用と normalize | `outline/lib/outline-ops.test.ts` |
+| 未送信 Op キューの enqueue と coalesce（第 5.2 節） | `outline/lib/op-queue.test.ts` |
+| enqueue 前の事前バリデーション（第 5.2 節） | `outline/lib/validate-op.test.ts` |
 | Op → Server Action の振り分け（網羅性を含む） | `outline/lib/dispatch-op.test.ts` |
 | Op の逆操作の組み立て | `outline/lib/invert-op.test.ts` |
 | 同一 actual parent 内の rank 解決 | `outline/lib/sibling-rank.test.ts` |
@@ -1281,7 +1307,6 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | ヘルプ表示セクションの導出 | `outline/lib/keymap-help.test.ts` |
 | キーシーケンスのトークン分解・整形 | `outline/lib/key-sequence.test.ts` |
 | 行内タイトル編集の状態判定 | `outline/lib/inline-title-edit.test.ts` |
-| tempId → 実 id の対応表、settle 済みの行の差し込み、行の論理キー | `outline/lib/pending-create-registry.test.ts` |
 | ペイン比率の clamp と保存値の解釈 | `outline/lib/pane-ratio.test.ts` |
 | 表示用状態の導出（done / blocked / ready） | `task-detail/lib/task-status.test.ts` |
 | 依存操作のエラー文言 | `task-detail/lib/dependency-error.test.ts` |
@@ -1289,10 +1314,9 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | SQLSTATE / メッセージ → `TaskErrorCode` 変換 | `task/lib/map-db-error.test.ts` |
 | reject の失敗形への変換と版ずれ判別（第 8.4 節） | `task/lib/action-rejection.test.ts` |
 | reject を値へ落とす窓口と公式述語の注入（第 8.4 節） | `task/lib/run-server-action.test.ts` |
-| 同一論理行の付け替え判定 | `task/lib/temp-id-renames.test.ts` |
 | Asia/Tokyo 基準の日付整形と期限切れ判定 | `lib/date/timezone.test.ts` |
 | 行内タイトル編集のフォーカス遷移 | `outline/components/inline-title-editor.test.tsx` |
-| キー操作から Server Action までの結線、カーソル行とフォーカスの追従（第 6.6 節）、reject の受け止め（第 8.4 節） | `outline/components/outline-shell.test.tsx` |
+| キー操作から Op キュー・Server Action までの結線、カーソル行とフォーカスの追従（第 6.6 節）、直列送信・版ずれ停止・防波堤破棄・reconcile ゲート（第 5.2 節・第 8.6 節） | `outline/components/outline-shell.test.tsx` |
 | 詳細ペインの編集状態の初期化 | `task-detail/components/detail-pane.test.tsx` |
 
 `components` 配下の 3 ファイルだけ `@testing-library/react` で描画して確かめる。
@@ -1380,15 +1404,19 @@ Supabase CLI は devDependency として固定せず、`Makefile:10` の `npx -y
 | **RLS** | Row Level Security。PostgreSQL の行単位アクセス制御機構(req.md §40) |
 | **RPC** | Remote Procedure Call。本文書では Supabase 経由で呼び出す PostgreSQL Function を指す(req.md §52) |
 | **IME** | Input Method Editor。日本語入力等の変換確定前状態を指し、`isComposing` によるキーイベント抑制の対象となる |
-| **`OutlineOp`** | 1 回のユーザー操作を表す discriminated union（`features/outline/lib/outline-ops.ts`）。楽観適用・Server Action の振り分け・undo 履歴のすべてがこの 1 種類の値を介する（第 5.2 節） |
+| **`OutlineOp`** | 1 回のユーザー操作を表す discriminated union（`features/outline/lib/outline-ops.ts`）。クライアント state への適用・Server Action の振り分け・undo 履歴のすべてがこの 1 種類の値を介する（第 5.2 節） |
 | **rank** | 同一 actual parent 内での 0 始まりの並び順。`reorder` Op が持つ値であり、DB の `position` とは別物（削除済みの兄弟が挟まると両者はずれる。第 9 章） |
-| **tempId** | 楽観 `create` が採番する一時的な行 ID（`crypto.randomUUID()`）。Server Action の応答で実 id へ付け替わる（第 5.2 節） |
+| **write-behind** | 変更をまず手元の状態へ適用し、永続化は背後のキューが後から自動で行う方式。本アプリではセッション中のタスクデータをクライアント正 state とし、直列 Op キューが永続化を担う（第 5.2 節） |
+| **Op キュー（flusher）** | 未送信 `OutlineOp` の FIFO 列と、それを先頭から 1 本ずつ Server Action へ送る送信ループ（flusher）。実体は `use-op-queue.ts` のモジュールスコープに置く（第 5.2 節） |
+| **coalesce** | キュー上で隣接する同一対象・同一種別の Op（タイトル・説明・期日・並べ替え）を後の Op で置き換え、送信回数を減らす最適化（第 5.2 節） |
+| **reconcile ゲート** | RSC 由来の props をクライアント正 state へ採用するかの判定。キューに未同期の Op が 1 つも無いときだけ採用する（第 5.2 節・第 8.6 節） |
+| **防波堤** | 事前バリデーションをすり抜けた操作を最終的に弾く、サーバー側の trigger（SQLSTATE `ET001`〜`ET007`）の本設計書での呼称。ヒット時は残キューを破棄して reconcile で収束させる（第 5.2 節） |
 | **ドキュメント専用エントリ** | keymap テーブルのうち `run` を持たないエントリ。dispatcher の trie には載らず、ヘルプにのみ現れる（第 6.2 節） |
 
 ---
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 2752573
+- 対象コミット: 904e36d
 - 作成日: 2026-08-08
-- 更新日: 2026-08-13
+- 更新日: 2026-08-28
 - 生成者: Claude Code

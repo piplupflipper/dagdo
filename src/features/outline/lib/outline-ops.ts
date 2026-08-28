@@ -4,8 +4,8 @@ import type { AppTask, TaskDependency } from "@/types/task";
 /**
  * アウトライナーの全構造操作を表す単一の Op 型 (docs/frontend-design.md §5.2)
  *
- * 「表示状態 = reduce(サーバー由来 tasks, pendingOps)」の単一リデューサ方式における pendingOps の要素であり、
- * `useOptimistic` のアクションとしてそのまま使う。1 Op = 1 回のユーザー操作 (キー入力 / dnd ドロップ) に対応する。
+ * クライアント正 state (`OutlineShell` の `tasks`) への適用と、直列 Op キュー (Issue #70) の送信単位の
+ * 両方をこの 1 つの型で表す。1 Op = 1 回のユーザー操作 (キー入力 / dnd ドロップ) に対応する。
  *
  * `move` の `newPosition` は `move_task` RPC の `p_new_position` と同じ意味 (新しい actual parent 内の
  * 実 DB position、対象を除いた兄弟の隙間詰め・隙間空けの基準になる、migration 0005)。
@@ -20,7 +20,7 @@ import type { AppTask, TaskDependency } from "@/types/task";
  * 対象タスクの rank (`orderedTaskIds.indexOf(taskId)`) を取り、それをここへ渡す
  */
 export type OutlineOp =
-    | { type: "create"; tempId: string; title: string; parentId: string | null; position: number | null }
+    | { type: "create"; id: string; title: string; parentId: string | null; position: number | null }
     | { type: "complete"; taskId: string }
     | { type: "reopen"; taskId: string }
     | { type: "updateTitle"; taskId: string; title: string }
@@ -111,7 +111,7 @@ const applyCreate = (tasks: readonly AppTask[], op: Extract<OutlineOp, { type: "
     const now = new Date().toISOString();
     const userId = tasks[0]?.user_id ?? options.fallbackUserId ?? "";
     const newTask: AppTask = {
-        id: op.tempId,
+        id: op.id,
         user_id: userId,
         title: op.title,
         description: "",
@@ -248,7 +248,7 @@ const normalize = (tasks: readonly AppTask[], dependencies: readonly TaskDepende
 /**
  * 1 Op を tasks へ適用し、normalize まで行った配列を返す純関数 (docs/frontend-design.md §5.2)
  *
- * `useOptimistic(initialTasks, (state, op) => applyOutlineOp(state, dependencies, op))` の reducer 本体として使う
+ * クライアント正 state の同期 setState (`OutlineShell` の `applyOp`) の reducer 本体として使う
  */
 export const applyOutlineOp = (tasks: readonly AppTask[], dependencies: readonly TaskDependency[], op: OutlineOp, options: ApplyOutlineOpOptions = {}): AppTask[] => {
     switch (op.type) {

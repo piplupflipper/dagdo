@@ -19,7 +19,7 @@ type OutlineRowProps = {
      * この行を行内編集中ならその下書き文字列、編集中でなければ null
      *
      * `OutlineShell` の `inlineTitleEdit.draft` を controlled value としてそのまま渡す
-     * (tempId → 実 id の付け替えで行が再マウントされても下書きが失われないようにするための引き上げ、バグ修正)
+     * (行が再マウントされても下書きが失われないようにするための引き上げ、バグ修正)
      */
     inlineEditDraft: string | null;
     onSelectCursor: (taskId: string) => void;

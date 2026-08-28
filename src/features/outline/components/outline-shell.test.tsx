@@ -1,33 +1,33 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OutlineShell } from "@/features/outline/components/outline-shell";
+import { resetOpQueueForTesting } from "@/features/outline/hooks/use-op-queue";
+import type { OutlineOp } from "@/features/outline/lib/outline-ops";
 import { useOutlineStore } from "@/store/outline-store";
-import type { AppTask } from "@/types/task";
+import type { AppTask, TaskDependency } from "@/types/task";
 
 /**
- * `OutlineShell` を `useOutlineMutations` / `usePendingCreate` / `OutlineHeader` へ分割した際の回帰テスト (Issue #34)
+ * `OutlineShell` の配線の回帰テスト (Issue #34、write-behind 化は Issue #70)
  *
- * 網羅は狙わず、分割で壊れやすい配線だけを確かめる。すなわち一覧が描けること、ヘッダのボタンが
- * ストアと繋がっていること、`o` 相当の新規作成が tempId → 実id の付け替えまで通ること、
- * 行の操作が Op のパイプラインへ流れることである。
- * Server Action は呼び出しの有無だけを見たいので、境界となる 4 モジュールを差し替える
+ * 網羅は狙わず、壊れやすい配線だけを確かめる。すなわち一覧が描けること、ヘッダのボタンが
+ * ストアと繋がっていること、操作が「validate → apply → enqueue」のパイプラインを通って
+ * 直列 Op キューから Server Action の振り分け (`callServerForOp`) へ流れること、
+ * キューの失敗形 (版ずれ停止・防波堤ヒット) がステータス行へ届くことである。
+ * Server Action は呼び出しの有無だけを見たいので、境界となるモジュールを差し替える
  */
 
 const callServerForOpMock = vi.fn();
-const createTaskMock = vi.fn();
-/** VISUAL の一括完了 (`completeSelection`) だけは `callServerForOp` を通らず、この Action を直接呼ぶ */
-const completeTaskMock = vi.fn();
+const routerRefreshMock = vi.fn();
 
 vi.mock("@/features/outline/lib/dispatch-op", () => ({
     callServerForOp: (...args: unknown[]) => callServerForOpMock(...args),
 }));
-vi.mock("@/features/task/actions/create-task", () => ({
-    createTask: (input: unknown) => createTaskMock(input),
-}));
-vi.mock("@/features/task/actions/complete-task", () => ({
-    completeTask: (input: unknown) => completeTaskMock(input),
-}));
-vi.mock("@/features/task/actions/update-task", () => ({ updateTask: vi.fn() }));
+// reconcile トリガ (Issue #70) が useRouter().refresh() を打つため差し替える。
+// run-server-action.ts が同モジュールの unstable_isUnrecognizedActionError を使うので、実体を残して useRouter だけを上書きする
+vi.mock("next/navigation", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("next/navigation")>();
+    return { ...actual, useRouter: () => ({ refresh: routerRefreshMock }) };
+});
 // 詳細ペインの依存追加・削除と、StatusLine のログアウト。いずれも Server Action であり、
 // 素の import は認証まわりのサーバー専用モジュールまで辿ってしまうため差し替える
 vi.mock("@/features/task/actions/add-dependency", () => ({ addDependency: vi.fn() }));
@@ -71,14 +71,12 @@ const task = ({ id, title = id, sortPath }: { id: string; title?: string; sortPa
 
 const tasks: AppTask[] = [task({ id: "task-1", title: "最初のタスク", sortPath: [0] }), task({ id: "task-2", title: "次のタスク", sortPath: [1] })];
 
-const renderShell = (): void => {
-    render(<OutlineShell userId="user-1" initialTasks={tasks} initialDependencies={[]} />);
-};
+const renderShell = (initialDependencies: TaskDependency[] = []): RenderResult => render(<OutlineShell userId="user-1" initialTasks={tasks} initialDependencies={initialDependencies} />);
 
 beforeEach(() => {
+    // Op キューの実体はモジュールスコープのシングルトンであり、前のケースの停止フラグや未送信 Op が残るため毎回消す
+    resetOpQueueForTesting();
     callServerForOpMock.mockResolvedValue({ ok: true, data: undefined });
-    createTaskMock.mockResolvedValue({ ok: true, data: { id: "real-1" } });
-    completeTaskMock.mockResolvedValue({ ok: true, data: undefined });
     useOutlineStore.setState({
         mode: "NORMAL",
         cursorTaskId: null,
@@ -125,35 +123,30 @@ describe("ヘッダのボタン", () => {
 });
 
 describe("新規タスク", () => {
-    it("createTask を呼び、settle 後にカーソルを実 id へ付け替える", async () => {
-        // 楽観行 (tempId) と settle 後の実 id を順に踏むので、最終値ではなく通過した値を記録して確かめる
-        const cursorHistory: (string | null)[] = [];
-        const unsubscribe = useOutlineStore.subscribe((state) => cursorHistory.push(state.cursorTaskId));
+    it("クライアント採番の id で create Op を流し、カーソルを即座にその id へ合わせる", async () => {
         renderShell();
         fireEvent.click(screen.getByRole("button", { name: "+ 新規タスク" }));
-        await waitFor(() => expect(createTaskMock).toHaveBeenCalledWith({ title: "新規タスク", parentId: null, position: null }));
-        await waitFor(() => expect(cursorHistory).toContain("real-1"));
-        unsubscribe();
+
+        await waitFor(() => expect(callServerForOpMock).toHaveBeenCalledWith({ type: "create", id: expect.any(String), title: "新規タスク", parentId: null, position: null }, expect.anything()));
+        const createOp = callServerForOpMock.mock.calls[0]?.[0] as Extract<OutlineOp, { type: "create" }>;
+        // id はクライアントが採番した実 PK であり、settle を待たずカーソルはこの id のまま動かない
+        expect(useOutlineStore.getState().cursorTaskId).toBe(createOp.id);
     });
 
-    /**
-     * settle から revalidate 到着までの窓 (Issue #60)
-     *
-     * `createTask` を保留にしたまま `o` → `i` と進め、編集中に解決させる。
-     * Server Action を差し替えたこのテストではサーバー由来の一覧が更新されないため、
-     * 「解決したが実 id の行がまだ現れていない」状態がそのまま再現できる。
-     * 修正前はここで一覧から行が消え、ストアの clamp がカーソルを先頭行へ寄せ、
-     * その移動が行内編集を畳んでフォーカスを body へ落としていた
-     */
-    /** `o` で作成し、settle を保留にしたまま `i` でタイトルを編集し始める。戻り値は settle を起こす関数と編集中の input */
+    /** `o` で作成し、create の送信を保留にしたまま `i` でタイトルを編集し始める。戻り値は送信を解決させる関数と編集中の input */
     const createAndStartEditing = async (): Promise<{ settle: () => Promise<void>; input: HTMLElement }> => {
         let resolveCreate: ((result: { ok: true; data: { id: string } }) => void) | undefined;
-        createTaskMock.mockImplementation(() => new Promise((resolve) => (resolveCreate = resolve)));
+        callServerForOpMock.mockImplementation((op: OutlineOp) => {
+            if (op.type === "create") {
+                return new Promise((resolve) => (resolveCreate = resolve));
+            }
+            return Promise.resolve({ ok: true, data: undefined });
+        });
 
         renderShell();
         fireEvent.click(screen.getByText("最初のタスク"));
         fireEvent.keyDown(document, { key: "o" });
-        // 楽観行が描かれるまで待つ (createTask は保留のまま)
+        // 行は同期適用で即座に描かれる (createTask の応答は待たない)
         await act(async () => {});
         fireEvent.keyDown(document, { key: "i" });
         const input = screen.getByRole("textbox", { name: "タイトルを行内編集" });
@@ -161,38 +154,31 @@ describe("新規タスク", () => {
 
         const settle = async (): Promise<void> => {
             await act(async () => {
-                resolveCreate?.({ ok: true, data: { id: "real-1" } });
+                resolveCreate?.({ ok: true, data: { id: "unused" } });
             });
         };
         return { settle, input };
     };
 
-    it("作成直後にタイトルを編集していると、settle をまたいでもフォーカスと下書きが残る", async () => {
-        const { settle } = await createAndStartEditing();
-        await settle();
+    it("create の送信が終わる前に確定したタイトルも、直列キューが create の後に同じ id で送る", async () => {
+        const { settle, input } = await createAndStartEditing();
 
-        const input = screen.getByRole("textbox", { name: "タイトルを行内編集" });
-        expect(document.activeElement).toBe(input);
-        expect(input).toHaveProperty("value", "編集中のタイトル");
-        expect(useOutlineStore.getState().cursorTaskId).toBe("real-1");
-
-        // 窓の中で確定したタイトルも実 id で保存へ流れる (行が一覧から消えていると tasksById で引けず、黙って捨てていた)
+        // 確定はキューに積まれるだけで、create が未完了の間は送信されない (in-flight は最大 1)
         fireEvent.keyDown(input, { key: "Enter" });
-        await waitFor(() => expect(callServerForOpMock).toHaveBeenCalledWith({ type: "updateTitle", taskId: "real-1", title: "編集中のタイトル" }, expect.anything()));
+        expect(callServerForOpMock.mock.calls.filter(([op]) => (op as OutlineOp).type === "updateTitle")).toHaveLength(0);
+
+        await settle();
+        const createOp = callServerForOpMock.mock.calls[0]?.[0] as Extract<OutlineOp, { type: "create" }>;
+        await waitFor(() => expect(callServerForOpMock).toHaveBeenCalledWith({ type: "updateTitle", taskId: createOp.id, title: "編集中のタイトル" }, expect.anything()));
     });
 
-    /**
-     * 行の DOM 同一性 (Issue #62)
-     *
-     * 行の `key` を id にしていた頃は、settle の tempId → 実 id 付け替えで行のサブツリーごと作り直され、
-     * `input` も別の要素に差し替わっていた。フォーカスは callback ref が戻すが、キャレットは
-     * `caret` の指定位置へ巻き戻る。同じ要素であり続けることを見れば、その巻き戻りごと防げていると言える
-     */
-    it("settle をまたいでも行内編集の input は同じ要素のまま (行が作り直されない)", async () => {
+    it("create の送信中も行は同じ id のまま編集を続けられる (settle による付け替えが無い)", async () => {
         const { settle, input } = await createAndStartEditing();
         await settle();
 
         expect(screen.getByRole("textbox", { name: "タイトルを行内編集" })).toBe(input);
+        expect(document.activeElement).toBe(input);
+        expect(input).toHaveProperty("value", "編集中のタイトル");
     });
 });
 
@@ -241,66 +227,158 @@ describe("行の操作", () => {
 });
 
 /**
- * Server Action の reject (Issue #66)
+ * 事前バリデーション (Issue #70)
  *
- * 修正前は `startTransition` の中の素の await が reject を素通しし、例外が error boundary まで抜けて
- * 画面全体がエラー表示へ切り替わっていた。ここでは 1 操作の失敗として扱われること、
- * すなわち例外が外へ出ずステータス行へ文言が出ること、楽観適用が `ok: false` のときと同じく巻き戻ることを見る。
- * 巻き戻りは `useOptimistic` が transition の終了で行うものであり、失敗時に明示的な逆適用は行っていない
+ * enqueue 前 (apply 前) に手元の一覧で判定し、失敗なら apply も送信も行わない。
+ * `TASK_BLOCKED` は原因タスク名を含む日本語文言を出す (findBlockingCause による差し替え、現行踏襲)
  */
-describe("Server Action の reject", () => {
-    /** カーソル行のチェックボックス。完了の楽観適用が残っていれば `✓`、巻き戻っていれば空になる */
+describe("事前バリデーション", () => {
+    const blockedDependency: TaskDependency = { user_id: "user-1", task_id: "task-1", depends_on_task_id: "task-2", created_at: "2026-08-13T00:00:00.000Z" };
+
+    it("blocked なタスクの完了は Server Action を呼ばず、原因タスク名を含む文言を出す", async () => {
+        renderShell([blockedDependency]);
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+
+        expect(await screen.findByText("TASK_BLOCKED — 次のタスク が未完了のため完了できません")).toBeTruthy();
+        expect(callServerForOpMock).not.toHaveBeenCalled();
+        // 楽観適用もしていない (チェックボックスは空のまま)
+        expect(screen.getAllByRole("button", { name: "完了を切替" })[0]?.textContent).toBe("");
+    });
+
+    it("VISUAL の一括完了は validate を通過した分だけ送り、件数を出す", async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        renderShell([blockedDependency]);
+
+        fireEvent.click(screen.getByText("最初のタスク"));
+        fireEvent.click(screen.getByRole("button", { name: "V ビジュアル" }));
+        fireEvent.keyDown(document, { key: "x" });
+
+        expect(await screen.findByText("1件中0件を完了")).toBeTruthy();
+        expect(callServerForOpMock).not.toHaveBeenCalled();
+        consoleError.mockRestore();
+    });
+});
+
+/**
+ * Op キューの失敗形 (Issue #70)
+ *
+ * write-behind のため、失敗してもクライアント正 state は巻き戻らない (表示は操作直後のまま)。
+ * 版ずれは flusher の停止 + 再読み込みを促す文言、防波堤ヒットは残キュー破棄 + エラー文言で伝える
+ */
+describe("Op キューの失敗", () => {
+    /** カーソル行のチェックボックス。完了が適用されていれば `✓` */
     const firstToggleLabel = (): string => screen.getAllByRole("button", { name: "完了を切替" })[0]?.textContent ?? "";
 
-    it("版ずれの reject はステータス行へ再読み込みを促す文言を出し、楽観適用は巻き戻る", async () => {
+    it("版ずれの reject はステータス行へ再読み込みを促す文言を出し、クライアント状態は巻き戻さない", async () => {
         const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
         callServerForOpMock.mockRejectedValue(new Error("Failed to find Server Action. This request might be from an older or newer deployment."));
         renderShell();
 
         fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
 
-        await waitFor(() => expect(screen.getByText("新しいバージョンが公開されています。ページを再読み込みしてください")).toBeTruthy());
-        // 巻き戻しは transition の終了に伴って起きるため、文言の表示と同じレンダーとは限らない
-        await waitFor(() => expect(firstToggleLabel()).toBe(""));
+        expect(await screen.findByText("新しいバージョンが公開されています。ページを再読み込みしてください")).toBeTruthy();
+        // クライアント正 state は正のまま (useOptimistic の巻き戻しは廃止)
+        expect(firstToggleLabel()).toBe("✓");
+        // flusher は停止しており、以降の操作を送信しない
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[1]);
+        await act(async () => {});
+        expect(callServerForOpMock).toHaveBeenCalledTimes(1);
         consoleError.mockRestore();
     });
 
-    it("`ok: false` の失敗も同じく文言を出して巻き戻る (reject との差は文言だけ)", async () => {
+    it("`ok: false` (サーバー防波堤) は残キューを破棄してエラー文言を出す", async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
         callServerForOpMock.mockResolvedValue({ ok: false, code: "TASK_NOT_FOUND", message: "task not found" });
         renderShell();
 
         fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
 
-        await waitFor(() => expect(screen.getByText("TASK_NOT_FOUND — task not found")).toBeTruthy());
-        await waitFor(() => expect(firstToggleLabel()).toBe(""));
+        expect(await screen.findByText("TASK_NOT_FOUND — task not found")).toBeTruthy();
+        expect(firstToggleLabel()).toBe("✓");
+        consoleError.mockRestore();
+    });
+});
+
+/**
+ * reconcile トリガと未同期表示 (Issue #70)
+ *
+ * キューが空になった瞬間と防波堤ヒットで残キューを破棄した直後に `router.refresh()` を打つ。
+ * 未同期の Op がある間はステータス行に「未同期 N 件」を常設表示する
+ */
+describe("reconcile トリガと未同期表示", () => {
+    it("キューが空になると router.refresh を打つ", async () => {
+        renderShell();
+        expect(routerRefreshMock).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+        await waitFor(() => expect(routerRefreshMock).toHaveBeenCalledTimes(1));
     });
 
-    /** VISUAL の一括完了で選択範囲の全件が版ずれで落ちたとき、件数だけでは再読み込みの導線が伝わらない */
-    it("VISUAL の一括完了は、reject を件数だけに埋めずステータス行へ出す", async () => {
+    it("防波堤ヒットで残キューを破棄した直後にも router.refresh を打つ", async () => {
         const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-        completeTaskMock.mockRejectedValue(new Error("Failed to find Server Action."));
+        callServerForOpMock.mockResolvedValue({ ok: false, code: "TASK_NOT_FOUND", message: "task not found" });
         renderShell();
 
-        fireEvent.click(screen.getByText("最初のタスク"));
-        fireEvent.click(screen.getByRole("button", { name: "V ビジュアル" }));
-        fireEvent.keyDown(document, { key: "x" });
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
 
-        // StatusLine は errorMessage を infoMessage (「1件中0件を完了」) より優先して出す
-        await waitFor(() => expect(screen.getByText("新しいバージョンが公開されています。ページを再読み込みしてください")).toBeTruthy());
+        expect(await screen.findByText("TASK_NOT_FOUND — task not found")).toBeTruthy();
+        expect(routerRefreshMock).toHaveBeenCalledTimes(1);
         consoleError.mockRestore();
     });
 
-    it("VISUAL の一括完了が `ok: false` で落ちたときは、従来どおり件数だけを出す", async () => {
-        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-        completeTaskMock.mockResolvedValue({ ok: false, code: "TASK_BLOCKED", message: "task is blocked" });
+    it("unmount → 再マウントでも未同期件数を引き継ぐ (キューの実体はシングルトン)", async () => {
+        // 送信を保留にして in-flight の 1 件を未同期のまま残す (/trash への遷移中も送信は続く想定)
+        callServerForOpMock.mockImplementation(() => new Promise(() => undefined));
+        const view = renderShell();
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+        expect(await screen.findByText("未同期 1 件")).toBeTruthy();
+
+        view.unmount();
         renderShell();
+        expect(await screen.findByText("未同期 1 件")).toBeTruthy();
+    });
 
-        fireEvent.click(screen.getByText("最初のタスク"));
-        fireEvent.click(screen.getByRole("button", { name: "V ビジュアル" }));
-        fireEvent.keyDown(document, { key: "x" });
+    it("未同期の Op がある間はステータス行に件数を出し、送信が終わると消す", async () => {
+        // 送信を保留にして in-flight の 1 件を未同期のまま残す
+        let resolveComplete: ((result: { ok: true; data: undefined }) => void) | undefined;
+        callServerForOpMock.mockImplementation(() => new Promise((resolve) => (resolveComplete = resolve)));
+        renderShell();
+        expect(screen.queryByText("未同期 1 件")).toBeNull();
 
-        await waitFor(() => expect(screen.getByText("1件中0件を完了")).toBeTruthy());
-        consoleError.mockRestore();
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+        expect(await screen.findByText("未同期 1 件")).toBeTruthy();
+
+        await act(async () => {
+            resolveComplete?.({ ok: true, data: undefined });
+        });
+        expect(screen.queryByText("未同期 1 件")).toBeNull();
+    });
+});
+
+/**
+ * reconcile ゲート (Issue #70)
+ *
+ * props (RSC 由来) の変化は「キューが空のときだけ」クライアント正 state へ採用する
+ */
+describe("reconcile ゲート", () => {
+    const refreshedTasks: AppTask[] = [task({ id: "task-1", title: "サーバーで変わったタスク", sortPath: [0] }), task({ id: "task-2", title: "次のタスク", sortPath: [1] })];
+
+    it("キューが空なら新しい props を採用する", async () => {
+        const view = renderShell();
+        view.rerender(<OutlineShell userId="user-1" initialTasks={refreshedTasks} initialDependencies={[]} />);
+        expect(await screen.findByText("サーバーで変わったタスク")).toBeTruthy();
+    });
+
+    it("未同期の Op がある間は props を無視する", async () => {
+        // 送信を保留にしてキューを空でなくしておく (complete が in-flight のまま残る)
+        callServerForOpMock.mockImplementation(() => new Promise(() => undefined));
+        const view = renderShell();
+        fireEvent.click(screen.getAllByRole("button", { name: "完了を切替" })[0]);
+        await act(async () => {});
+
+        view.rerender(<OutlineShell userId="user-1" initialTasks={refreshedTasks} initialDependencies={[]} />);
+        expect(screen.getByText("最初のタスク")).toBeTruthy();
+        expect(screen.queryByText("サーバーで変わったタスク")).toBeNull();
     });
 });
 

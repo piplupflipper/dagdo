@@ -101,7 +101,7 @@ describe("invertOutlineOp", () => {
     });
 
     it("create / restore は履歴の組み立て対象外として null", () => {
-        expect(invertOutlineOp({ type: "create", tempId: "temp-1", title: "新規タスク", parentId: null, position: null }, [])).toBeNull();
+        expect(invertOutlineOp({ type: "create", id: "temp-1", title: "新規タスク", parentId: null, position: null }, [])).toBeNull();
         expect(invertOutlineOp({ type: "restore", taskId: "a", snapshot: task({ id: "a" }) }, [])).toBeNull();
     });
 });

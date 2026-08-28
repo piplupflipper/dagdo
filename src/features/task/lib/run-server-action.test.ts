@@ -17,7 +17,7 @@ describe("runServerAction", () => {
     it("reject を捕まえて失敗形の値にする (呼び出し元へ例外を投げない)", async () => {
         const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
         const outcome = await runServerAction(() => Promise.reject(new Error("Failed to find Server Action.")));
-        expect(outcome).toEqual({ ok: false, rejected: true, message: STALE_DEPLOYMENT_MESSAGE });
+        expect(outcome).toEqual({ ok: false, rejected: true, message: STALE_DEPLOYMENT_MESSAGE, isVersionSkew: true });
         // 文言は原因を 2 つに分けるだけで理由そのものは残らないため、切り分け用のログを出す
         expect(consoleError).toHaveBeenCalledTimes(1);
         consoleError.mockRestore();
@@ -28,7 +28,7 @@ describe("runServerAction", () => {
         const outcome = await runServerAction(() => {
             throw new Error("boom");
         });
-        expect(outcome).toEqual({ ok: false, rejected: true, message: TRANSPORT_FAILURE_MESSAGE });
+        expect(outcome).toEqual({ ok: false, rejected: true, message: TRANSPORT_FAILURE_MESSAGE, isVersionSkew: false });
         consoleError.mockRestore();
     });
 
@@ -44,7 +44,7 @@ describe("runServerAction", () => {
         const { UnrecognizedActionError } = await import("next/dist/client/components/unrecognized-action-error");
         const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
         const outcome = await runServerAction(() => Promise.reject(new UnrecognizedActionError("this deployment does not know that action")));
-        expect(outcome).toEqual({ ok: false, rejected: true, message: STALE_DEPLOYMENT_MESSAGE });
+        expect(outcome).toEqual({ ok: false, rejected: true, message: STALE_DEPLOYMENT_MESSAGE, isVersionSkew: true });
         consoleError.mockRestore();
     });
 });

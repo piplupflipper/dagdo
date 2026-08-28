@@ -8,20 +8,17 @@ import type { Database } from "@/lib/supabase/database.types";
  *
  * parent_id / position / dependency の構造変更はここでは扱わない (専用 Action を使う)
  */
-export const updateTask = defineTaskAction<{ taskId: string; title?: string; description?: string; dueDate?: string | null }>(
-    ["/"],
-    async ({ client, userId }, { taskId, title, description, dueDate }) => {
-        const updates: Database["public"]["Tables"]["tasks"]["Update"] = {};
-        if (title !== undefined) {
-            updates.title = title;
-        }
-        if (description !== undefined) {
-            updates.description = description;
-        }
-        if (dueDate !== undefined) {
-            updates.due_date = dueDate;
-        }
+export const updateTask = defineTaskAction<{ taskId: string; title?: string; description?: string; dueDate?: string | null }>(async ({ client, userId }, { taskId, title, description, dueDate }) => {
+    const updates: Database["public"]["Tables"]["tasks"]["Update"] = {};
+    if (title !== undefined) {
+        updates.title = title;
+    }
+    if (description !== undefined) {
+        updates.description = description;
+    }
+    if (dueDate !== undefined) {
+        updates.due_date = dueDate;
+    }
 
-        return await client.from("tasks").update(updates).eq("id", taskId).eq("user_id", userId);
-    },
-);
+    return await client.from("tasks").update(updates).eq("id", taskId).eq("user_id", userId);
+});

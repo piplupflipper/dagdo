@@ -28,8 +28,12 @@ type TaskActionBody<A> = (ctx: TaskActionContext, args: A) => Promise<{ error: P
  * Server Action の定型を 1 箇所へ集約する高階関数 (req.md §71)
  *
  * req.md §71 が Server Action の責務として挙げる session 確認・DB/RPC 呼び出し・
- * DB エラー変換・revalidation のうち、呼び出し 1 文以外をここが担う。
- * 固有部分は revalidate 対象パスと Supabase 呼び出しだけであるため、その 2 つを引数で受ける。
+ * DB エラー変換のうち、呼び出し 1 文以外をここが担う。
+ *
+ * write-behind 化 (Issue #70) により、Op キューを通る Action は `revalidatePath` を呼ばない
+ * (鮮度はクライアント側の reconcile トリガ = `router.refresh()` が担保する)。
+ * キュー対象外の依存編集 (addDependency / removeDependency) だけが現行どおり revalidate を要るため、
+ * 対象パスは省略可能な第 2 引数 `revalidateTargets` として残す。
  *
  * 契約外のエラーは mapDbErrorOrThrow が re-throw する。ここでは捕捉せず上位へ伝播させる
  * (req.md §66, docs/frontend-design.md §8.3)。
@@ -39,7 +43,7 @@ type TaskActionBody<A> = (ctx: TaskActionContext, args: A) => Promise<{ error: P
  * node_modules/next/dist/docs/01-app/03-api-reference/01-directives/use-server.md は
  * `export async function` 形しか例示していないため、この点は文書ではなく実測に拠る
  */
-export const defineTaskAction = <A>(revalidateTargets: readonly string[], body: TaskActionBody<A>) => {
+export const defineTaskAction = <A>(body: TaskActionBody<A>, revalidateTargets: readonly string[] = []) => {
     return async (args: A): Promise<ActionResult> => {
         const userId = await getSessionUserId();
         const client = await createAppClient({ userId });

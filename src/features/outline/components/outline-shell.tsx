@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, type JSX, useEffect, useOptimistic, useRef, useState } from "react";
+import { type CSSProperties, type JSX, useEffect, useRef, useState } from "react";
 import { DagPanel } from "@/features/dag/components/dag-panel";
 import { KeymapHelpOverlay } from "@/features/outline/components/keymap-help-overlay";
 import { OutlineHeader } from "@/features/outline/components/outline-header";
@@ -9,13 +9,11 @@ import { PaneDivider } from "@/features/outline/components/pane-divider";
 import { StatusLine } from "@/features/outline/components/status-line";
 import { useOutlineKeymap } from "@/features/outline/hooks/use-outline-keymap";
 import { useOutlineMutations } from "@/features/outline/hooks/use-outline-mutations";
-import { usePendingCreate } from "@/features/outline/hooks/use-pending-create";
 import { buildOutlineTree, collectCollapsibleTaskIds, deriveVisibleRows } from "@/features/outline/lib/build-tree";
 import { findSiblingTaskId } from "@/features/outline/lib/flatten-for-dnd";
 import type { InlineTitleCaret, InlineTitleEdit } from "@/features/outline/lib/inline-title-edit";
 import { applyOutlineOp, type OutlineOp } from "@/features/outline/lib/outline-ops";
 import { DEFAULT_LEFT_PANE_RATIO, PANE_RATIO_STORAGE_KEY, parseStoredPaneRatio } from "@/features/outline/lib/pane-ratio";
-import { createPendingCreateRegistry, mergeSettledRows } from "@/features/outline/lib/pending-create-registry";
 import { SearchOverlay } from "@/features/search/components/search-overlay";
 import { filterTasks } from "@/features/search/lib/filter-tasks";
 import { DetailPane, type DetailPaneHandle } from "@/features/task-detail/components/detail-pane";
@@ -41,17 +39,25 @@ type OutlineShellProps = {
  * アウトライナー本体のクライアント境界コンポーネント (docs/frontend-design.md §7.1)
  *
  * これより下の features/outline/task-detail/dag/search 配下のコンポーネントは "use client" を再宣言しない。
- * タスクデータは props (RSC 由来) を正とし、`useOptimistic` で全構造操作をオーバーレイする
- * (「表示状態 = reduce(サーバー由来 tasks, pendingOps)」の単一リデューサ方式、docs/frontend-design.md §5.2)。
- * pendingOps は `OutlineOp` (lib/outline-ops.ts) で表し、reduce 本体は純関数 `applyOutlineOp` に切り出してある。
+ * セッション中はクライアント state (`tasks` / `dependencies`) を正とし、Op の適用は純関数 `applyOutlineOp`
+ * (lib/outline-ops.ts) による同期 setState で行う。永続化は背後の直列 Op キュー (hooks/use-op-queue.ts) が
+ * 自動で行う write-behind であり、props (RSC 由来) の変化は「キューが空のときだけ」state へ採用する
+ * (reconcile ゲート、Issue #70)。
  *
- * このコンポーネント自身が持つのは、表示用の木の組み立てと、書き換えを伴わない UI の状態 (ヘルプの開閉・
- * 行内タイトル編集・ペイン比率) とカーソル移動だけである。タスクを書き換える操作は `useOutlineMutations`、
- * 楽観 create の tempId 付け替えにまつわるレンダー中の調整は `usePendingCreate` が持つ
+ * このコンポーネント自身が持つのは、クライアント正 state と表示用の木の組み立て、書き換えを伴わない UI の状態
+ * (ヘルプの開閉・行内タイトル編集・ペイン比率) とカーソル移動だけである。
+ * タスクを書き換える操作は `useOutlineMutations` が持つ
  */
 export const OutlineShell = ({ userId, initialTasks, initialDependencies }: OutlineShellProps): JSX.Element => {
-    const dependencies = initialDependencies;
-    const [optimisticTasks, applyOptimisticAction] = useOptimistic(initialTasks, (state: AppTask[], op: OutlineOp) => applyOutlineOp(state, dependencies, op, { fallbackUserId: userId }));
+    /** クライアント正のタスク一覧と依存関係。初回マウント時に props から取り込み、以後は reconcile ゲートが更新する */
+    const [tasks, setTasks] = useState<AppTask[]>(initialTasks);
+    const [dependencies, setDependencies] = useState<TaskDependency[]>(initialDependencies);
+
+    /** 1 Op をクライアント正 state へ同期適用する (`useOutlineMutations` のパイプラインが呼ぶ) */
+    const applyOp = (op: OutlineOp): void => {
+        setTasks((previous) => applyOutlineOp(previous, dependencies, op, { fallbackUserId: userId }));
+    };
+
     /**
      * `?` のヘルプオーバーレイの開閉状態 (Issue #16)
      *
@@ -145,50 +151,48 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         findCursorRowElement()?.focus();
     }, [cursorTaskId]);
 
-    /**
-     * 楽観 create の tempId → 実id 対応表 (docs/frontend-design.md §5.2)
-     *
-     * 読み書きするのは `useOutlineMutations` (settle 時の記録) と `usePendingCreate` (レンダー中の調整と剪定) だが、
-     * 実体をここで持つのは、下の `mergeSettledRows` がツリー構築より前に対応表を要るためである (Issue #60)
-     */
-    const pendingCreateRef = useRef(createPendingCreateRegistry());
-    const pendingCreate = pendingCreateRef.current;
-
-    /**
-     * 表示に使うタスク一覧
-     *
-     * `createTask` の settle (startTransition の完了で楽観 op が捨てられる) から、`revalidatePath` による
-     * RSC の再描画が届くまでの間、作成した行はサーバー由来の一覧にも楽観適用後の一覧にも存在しない。
-     * その間だけ、settle 時に預けたつなぎの行を差し込んで一覧から消えないようにする (Issue #60)。
-     * 行が消えるとストアの `setVisibleTaskIds` がカーソルを先頭行へ寄せ、その移動が行内タイトル編集を畳んで
-     * フォーカスを落としてしまう。差し込みはツリーの組み立てより前でなければ意味がないため、ここで行う
-     */
-    const displayTasks = mergeSettledRows(optimisticTasks, pendingCreate);
-    const optimisticTaskIds = new Set(optimisticTasks.map((task) => task.id));
-
-    const tasksById = new Map(displayTasks.map((task) => [task.id, task]));
-    const rows = buildOutlineTree(displayTasks);
+    const tasksById = new Map(tasks.map((task) => [task.id, task]));
+    const rows = buildOutlineTree(tasks);
     const trimmedQuery = searchQuery.trim();
     const visibleRows =
         trimmedQuery.length === 0
             ? deriveVisibleRows(rows, collapsedTaskIds)
             : (() => {
-                  const matchedIds = new Set(filterTasks({ tasks: displayTasks, query: trimmedQuery }).map((task) => task.id));
+                  const matchedIds = new Set(filterTasks({ tasks, query: trimmedQuery }).map((task) => task.id));
                   return rows.filter((row) => matchedIds.has(row.task.id));
               })();
     const visibleTaskIdList = visibleRows.map((row) => row.task.id);
 
-    const cursorTask = usePendingCreate({ registry: pendingCreate, cursorTaskId, tasksById, optimisticTaskIds, visibleTaskIdList, inlineTitleEdit, setInlineTitleEdit });
+    const cursorTask = cursorTaskId === null ? null : (tasksById.get(cursorTaskId) ?? null);
+
+    // カーソルが別の行へ移ったら行内編集を畳む (行のクリックなど、input の外で起きた移動を拾う)。
+    // useEffect による同期ではなくレンダー中の state 調整で行う (detail-pane.tsx の lastTaskId と同じパターン)
+    const [lastCursorTaskId, setLastCursorTaskId] = useState<string | null>(cursorTaskId);
+    if (cursorTaskId !== lastCursorTaskId) {
+        setLastCursorTaskId(cursorTaskId);
+        if (inlineTitleEdit !== null) {
+            setInlineTitleEdit(null);
+        }
+    }
+
+    // 編集中の行が表示行の集合から消えた場合も行内編集を畳む (`zM` / `zc` による折りたたみ、検索の絞り込み、他経路での削除)。
+    // キー経由でここに来ることはない (編集中はフォーカスが input にあり dispatcher が isEditableTarget で素通しする) が、
+    // 行の折りたたみボタンのクリックのようにキーボード以外の経路で表示行が変わったとき、
+    // input が unmount されたまま inlineTitleEdit だけが残るのを防ぐ
+    if (inlineTitleEdit !== null && !visibleTaskIdList.includes(inlineTitleEdit.taskId)) {
+        setInlineTitleEdit(null);
+    }
 
     useEffect(() => {
         setVisibleTaskIds(visibleTaskIdList);
     }, [visibleTaskIdList, setVisibleTaskIds]);
 
-    const blockedCount = displayTasks.filter((task) => task.is_blocked).length;
+    const blockedCount = tasks.filter((task) => task.is_blocked).length;
 
     const {
         statusMessage,
         statusError,
+        pendingCount,
         handleToggleDone,
         completeCursor,
         completeSelection,
@@ -204,7 +208,24 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         handleReparent,
         undo,
         redo,
-    } = useOutlineMutations({ userId, tasks: displayTasks, tasksById, dependencies, cursorTask, pendingCreate, applyOptimisticAction, setInlineTitleEdit });
+    } = useOutlineMutations({ userId, tasks, tasksById, dependencies, cursorTask, applyOp, setInlineTitleEdit });
+
+    /**
+     * reconcile ゲート (Issue #70)
+     *
+     * props の変化 (router.refresh / revalidate 由来) は「キューが空のときだけ」クライアント正 state へ採用する。
+     * キューに未送信・送信中の Op が 1 つでもあれば、サーバー由来の一覧は未送信分を含まない古い姿なので無視する
+     * (キューが空になった後の reconcile トリガで改めて取り直す、Phase 3)。
+     * 採用判定は「props の参照が変わり、かつキューが空」。tasks と dependencies は同時に採用する
+     */
+    const [lastInitialTasks, setLastInitialTasks] = useState<AppTask[]>(initialTasks);
+    if (initialTasks !== lastInitialTasks) {
+        setLastInitialTasks(initialTasks);
+        if (pendingCount === 0) {
+            setTasks(initialTasks);
+            setDependencies(initialDependencies);
+        }
+    }
 
     /** `i` / `I` / `a` / `A`。カーソル行のタイトルの行内編集を開始する。実際のフォーカス移動は InlineTitleEditor の callback ref が行う */
     const startInlineTitleEdit = (caret: InlineTitleCaret): void => {
@@ -236,7 +257,7 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
         if (cursorTaskId === null) {
             return;
         }
-        const siblingTaskId = findSiblingTaskId({ tasks: displayTasks, taskId: cursorTaskId, direction });
+        const siblingTaskId = findSiblingTaskId({ tasks, taskId: cursorTaskId, direction });
         if (siblingTaskId === null) {
             return;
         }
@@ -300,13 +321,12 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                 <div className="flex min-w-0 flex-1 flex-col border-border md:flex-[0_0_var(--left-pane-percent)] md:border-r" style={{ "--left-pane-percent": `${leftPaneRatio}%` } as CSSProperties}>
                     <OutlinePane
                         visibleRows={visibleRows}
-                        tasks={displayTasks}
+                        tasks={tasks}
                         dependencies={dependencies}
                         cursorTaskId={cursorTaskId}
                         visualSelectedTaskIds={visualSelectedTaskIds}
                         flashTaskId={flashTaskId}
                         inlineTitleEdit={inlineTitleEdit}
-                        rowKeys={pendingCreate.rowKeys}
                         onSelectCursor={setCursor}
                         onToggleCollapse={toggleCollapsed}
                         onToggleDone={handleToggleDone}
@@ -317,7 +337,15 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                         onCancelInlineTitle={() => setInlineTitleEdit(null)}
                         onFocusOutlineList={focusOutlineList}
                     />
-                    <StatusLine mode={mode} cursorTask={cursorTask} totalCount={displayTasks.length} blockedCount={blockedCount} infoMessage={statusMessage} errorMessage={statusError} />
+                    <StatusLine
+                        mode={mode}
+                        cursorTask={cursorTask}
+                        totalCount={tasks.length}
+                        blockedCount={blockedCount}
+                        infoMessage={statusMessage}
+                        errorMessage={statusError}
+                        pendingCount={pendingCount}
+                    />
                 </div>
                 {/* dnd-kit の DndContext (行の並べ替え、OutlinePane 内) の外に置き、行 dnd とポインタ操作を競合させない */}
                 <PaneDivider containerRef={paneRowRef} ratio={leftPaneRatio} onRatioChange={setLeftPaneRatio} onDragEnd={handlePaneRatioDragEnd} />
@@ -325,25 +353,23 @@ export const OutlineShell = ({ userId, initialTasks, initialDependencies }: Outl
                     <DetailPane
                         ref={detailPaneRef}
                         task={cursorTask}
-                        allTasks={displayTasks}
+                        allTasks={tasks}
                         dependencies={dependencies}
-                        tempIdRenames={pendingCreate.renamedIds}
                         onEscapeToOutline={focusOutlineList}
                         onCommitTitle={commitInlineTitleEdit}
                         onCommitDescription={commitDescriptionEdit}
                         onCommitDueDate={commitDueDateEdit}
                     />
-                    <DagPanel centerTaskId={cursorTaskId} tasks={displayTasks} dependencies={dependencies} flashTaskId={flashTaskId} />
+                    <DagPanel centerTaskId={cursorTaskId} tasks={tasks} dependencies={dependencies} flashTaskId={flashTaskId} />
                 </div>
             </div>
 
             <MobileDetailSheet
                 task={cursorTask}
-                allTasks={displayTasks}
+                allTasks={tasks}
                 dependencies={dependencies}
                 flashTaskId={flashTaskId}
                 isInert={isHelpOpen}
-                tempIdRenames={pendingCreate.renamedIds}
                 onClose={() => setCursor(null)}
                 onEscapeToOutline={focusOutlineList}
                 onCommitTitle={commitInlineTitleEdit}
