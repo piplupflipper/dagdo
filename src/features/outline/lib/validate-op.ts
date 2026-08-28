@@ -50,17 +50,12 @@ const wouldCreateParentCycle = (taskId: string, newParentId: string, byId: Reado
 
 const siblingCount = (tasks: readonly AppTask[], parentId: string | null): number => tasks.filter((task) => task.parent_id === parentId).length;
 
-/**
- * 可視の兄弟グループに対する挿入位置として範囲外なら true
- *
- * 下限は RPC と同じ非負。上限は手元の可視件数 (末尾挿入 = count は許容、それより先は隙間になる)。
- * create Op の position は常に手元の一覧から採番されるためこの上限で足りる (move の実 position とは異なる)。
- * null は末尾指定であり範囲検査の対象外
- */
-const isPositionOutOfRange = (position: number | null, maxInclusive: number): boolean => position !== null && (position < 0 || position > maxInclusive);
-
-const validateCreate = (op: Extract<OutlineOp, { type: "create" }>, tasks: readonly AppTask[]): ValidateOutlineOpResult => {
-    if (isPositionOutOfRange(op.position, siblingCount(tasks, op.parentId))) {
+const validateCreate = (op: Extract<OutlineOp, { type: "create" }>): ValidateOutlineOpResult => {
+    // create の position は computeCreatePosition (flatten-for-dnd.ts) がカーソル行の task.position から導く
+    // 論理削除済み兄弟を含む実 position である。手元の tasks は削除済みを含まないため、可視件数を上限にすると
+    // 削除済み兄弟がいる階層での `o` / `O` が INVALID_POSITION で弾かれてしまう (Issue #72)。
+    // move (validateMove) と同じく負数チェックのみとする。null は末尾指定であり検査の対象外
+    if (op.position !== null && op.position < 0) {
         return { ok: false, code: "INVALID_POSITION" };
     }
     return { ok: true };
@@ -118,7 +113,7 @@ const validateReorder = (op: Extract<OutlineOp, { type: "reorder" }>, tasks: rea
 export const validateOutlineOp = (op: OutlineOp, tasks: readonly AppTask[], dependencies: readonly TaskDependency[]): ValidateOutlineOpResult => {
     switch (op.type) {
         case "create":
-            return validateCreate(op, tasks);
+            return validateCreate(op);
         case "complete":
             return validateComplete(op, tasks, dependencies);
         case "move":

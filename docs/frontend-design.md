@@ -512,7 +512,8 @@ Op に ID 配列を持たせないのは、undo 履歴へ積む逆操作を「�
 サーバー側の trigger（SQLSTATE `ET001`〜`ET007`、第 8.3 節）が弾く操作のうち、判定材料（タスクの木・依存関係・`is_blocked`）が手元に揃っているものは、enqueue する前にクライアントで弾く（`validate-op.ts` の `validateOutlineOp`）。
 永続化が非同期になったことで、サーバーに弾かせると失敗の通知が操作の数秒後に届き、その間のユーザー操作が失敗した状態の上へ積まれてしまうためである。
 
-クライアントで判定するのは `TASK_BLOCKED`（complete 対象の依存先に未完了が残る）・`TASK_PARENT_CYCLE`（move の新しい親が対象自身または子孫）・`INVALID_PARENT`（move の新しい親が手元に無い）・`INVALID_POSITION`（負数の position。move の上限は検査しない。`task.position` は論理削除済み兄弟を含む実 position であり、可視件数を上限にすると削除済み兄弟がいる行の `dd` → `u` を誤って弾くため）の 4 種である。
+クライアントで判定するのは `TASK_BLOCKED`（complete 対象の依存先に未完了が残る）・`TASK_PARENT_CYCLE`（move の新しい親が対象自身または子孫）・`INVALID_PARENT`（move の新しい親が手元に無い）・`INVALID_POSITION`（負数の position。move と create の上限は検査しない。どちらの position も論理削除済み兄弟を含む実 position 由来（`task.position`、`computeCreatePosition`）であり、可視件数を上限にすると削除済み兄弟がいる行の `dd` → `u` や `o` を誤って弾くため。Issue #72）の 4 種である。
+`reorder` の rank だけは可視兄弟基準の値なので、可視件数を上限に検査する。
 `TASK_NOT_FOUND` は別タブ・別デバイス起因であり事前判定できない。
 依存編集の `TASK_DEPENDENCY_CYCLE` / `DEPENDENCY_ALREADY_EXISTS` は Op の対象外であり扱わない。
 
