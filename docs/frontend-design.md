@@ -1,7 +1,7 @@
 # dagdo フロントエンド技術設計書
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 904e36d
+- 対象コミット: b9f2a14
 - 作成日: 2026-08-08
 - 更新日: 2026-08-28
 - 生成者: Claude Code
@@ -576,6 +576,24 @@ VISUAL の一括完了（`completeSelection`）は `runOp` を通らない。
 `DetailPane` の依存関係の編集と、ゴミ箱画面からの復元・完全削除は対象外である。
 依存関係が対象外なのは Op リデューサそのものの対象外だからであり（本節冒頭）、undo 履歴だけの制約ではない。
 
+#### ドットリピート
+
+vim の `.` に倣い、直前の変更を現在のカーソル行へ再適用する（Issue #74）。
+方式は Op（絶対値）の再生ではなくコマンドの再発行である。
+`reorder` や `move` の Op は移動後の rank・実 position を持つため、「1 つ下へ」「1 段インデント」という意図を Op から復元できない。
+代わりに変更の意図だけを記述子 `RepeatableCommand`（`features/outline/lib/repeat-command.ts`）としてレジスタへ直近 1 件記録し、`.` が現在のカーソルに対して既存ハンドラを再ディスパッチする。
+
+記録対象は `x`（complete）・`dd`（softDelete）・`J` / `K`（reorder の方向）・`>`（indent）・`<`（outdent）の 5 種のみである。
+`o` / `O`・タイトル/説明/期日の確定・dnd・VISUAL 一括完了・undo/redo は、レジスタへ記録もしなければ上書きもしない（vim でモーションがドットに乗らないのと同じ扱い）。
+記録するのは事前バリデーションを通過して apply された変更だけであり、弾かれた操作や no-op（端での `J` など）はレジスタを変えない。
+`runOp` が apply の成否を boolean で返すのはこの通知のためである。
+
+`.` の再発行は通常パイプライン（validate → apply → enqueue → 履歴）を素通しする。
+バリデーションで弾かれればステータス行へエラーが出て、成功すれば `.` の 1 回ごとに undo 履歴へ 1 エントリ積まれる（vim と同じ粒度で `u` により個別に戻せる）。
+`.` 自身はレジスタを書き換えないため、連打で同じ変更を繰り返せる。
+再発行先に渡すのはレジスタへ記録しない内部版のハンドラ群（`execute*`）であり、書き換えが構造的に起きない。
+レジスタは `use-outline-mutations.ts` の state（非永続）であり、Zustand には置かない。
+
 #### `DetailPane` の編集と依存関係
 
 `DetailPane` の呼び出し窓口は `commitInlineTitleEdit` / `commitDescriptionEdit` / `commitDueDateEdit` であり、いずれも `use-outline-mutations.ts` が持つ。
@@ -653,6 +671,7 @@ NORMAL モード。
 | `>` | 親を 1 階層下げる（indent。直前行を新しい親にする） | `move` Op。新しい parent・position は `computeIndent` が求める |
 | `V` | ビジュアルモードへ | 第 5.1 節参照 |
 | `dd` | ゴミ箱へ移動 | `softDelete` Op。連続 2 打鍵で確定する（vim の `dd` に倣う。pending key 方式、第 6.2 節） |
+| `.` | 直前の変更を繰り返す | ドットリピート（第 5.2 節）。記録対象は `x` / `dd` / `J` / `K` / `<` / `>` の 6 キー（5 種の変更）のみ |
 | `/` | 検索モードへ | 第 5.1 節参照 |
 | `?` | キーバインドのヘルプを表示 | ヘルプオーバーレイを開く。表示内容は keymap テーブルから生成する（第 6.3 節） |
 | `u` | undo | 適用済み Op の履歴スタックの末尾を取り消す（第 5.2 節）。`req.md` に undo の記載はなく、対象は `OutlineOp` の対象操作に限る |
@@ -1288,7 +1307,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 実行は `make fe-test`（`npm test` = `vitest run`）であり、品質ゲート `make check` の 3 段目に入る（第 3.6 節）。
 
 テストは対象と同じディレクトリに置く。
-主な対象は `lib/` 配下の純関数であり、次の 27 ファイル・355 件がある。
+主な対象は `lib/` 配下の純関数であり、次の 28 ファイル・366 件がある。
 
 | 対象 | テストファイル |
 |---|---|
@@ -1308,6 +1327,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | ヘルプ表示セクションの導出 | `outline/lib/keymap-help.test.ts` |
 | キーシーケンスのトークン分解・整形 | `outline/lib/key-sequence.test.ts` |
 | 行内タイトル編集の状態判定 | `outline/lib/inline-title-edit.test.ts` |
+| ドットリピート記述子 → ハンドラの変換（第 5.2 節） | `outline/lib/repeat-command.test.ts` |
 | ペイン比率の clamp と保存値の解釈 | `outline/lib/pane-ratio.test.ts` |
 | 表示用状態の導出（done / blocked / ready） | `task-detail/lib/task-status.test.ts` |
 | 依存操作のエラー文言 | `task-detail/lib/dependency-error.test.ts` |
@@ -1317,7 +1337,7 @@ hover 時のみ極薄 shadow を付与する仕様は、専用の shadow トー�
 | reject を値へ落とす窓口と公式述語の注入（第 8.4 節） | `task/lib/run-server-action.test.ts` |
 | Asia/Tokyo 基準の日付整形と期限切れ判定 | `lib/date/timezone.test.ts` |
 | 行内タイトル編集のフォーカス遷移 | `outline/components/inline-title-editor.test.tsx` |
-| キー操作から Op キュー・Server Action までの結線、カーソル行とフォーカスの追従（第 6.6 節）、直列送信・版ずれ停止・防波堤破棄・reconcile ゲート（第 5.2 節・第 8.6 節） | `outline/components/outline-shell.test.tsx` |
+| キー操作から Op キュー・Server Action までの結線、カーソル行とフォーカスの追従（第 6.6 節）、直列送信・版ずれ停止・防波堤破棄・reconcile ゲート（第 5.2 節・第 8.6 節）、ドットリピート | `outline/components/outline-shell.test.tsx` |
 | 詳細ペインの編集状態の初期化 | `task-detail/components/detail-pane.test.tsx` |
 
 `components` 配下の 3 ファイルだけ `@testing-library/react` で描画して確かめる。
@@ -1417,7 +1437,7 @@ Supabase CLI は devDependency として固定せず、`Makefile:10` の `npx -y
 ---
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 904e36d
+- 対象コミット: b9f2a14
 - 作成日: 2026-08-08
 - 更新日: 2026-08-28
 - 生成者: Claude Code
