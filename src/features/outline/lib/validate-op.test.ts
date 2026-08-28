@@ -108,10 +108,13 @@ describe("validateOutlineOp: INVALID_POSITION", () => {
         expect(result).toEqual({ ok: false, code: "INVALID_POSITION" });
     });
 
-    it("create の position が兄弟数より大きいと INVALID_POSITION", () => {
-        const tasks = [task({ id: "a", position: 0 })];
-        const result = validateOutlineOp({ type: "create", id: "t", title: "n", parentId: null, position: 2 }, tasks, []);
-        expect(result).toEqual({ ok: false, code: "INVALID_POSITION" });
+    it("create の position は可視兄弟数を超えても通す (削除済み兄弟がいる階層での o の退行防止、Issue #72)", () => {
+        // A(0) / B(1, 論理削除済みで手元に無い) / C(2) の兄弟グループで C にカーソルを置いて `o` を押すと、
+        // computeCreatePosition は C の実 position + 1 = 3 を返す。手元の可視件数 (2 件) を上限にすると
+        // この作成が INVALID_POSITION で弾かれる。create も RPC と同じ負数チェックのみとする
+        const tasks = [task({ id: "a", position: 0 }), task({ id: "c", position: 2 })];
+        const result = validateOutlineOp({ type: "create", id: "t", title: "n", parentId: null, position: 3 }, tasks, []);
+        expect(result).toEqual({ ok: true });
     });
 
     it("create の position が兄弟数と等しい (末尾挿入) なら通す", () => {
