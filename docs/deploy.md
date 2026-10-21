@@ -1,13 +1,14 @@
 # dagdo 本番デプロイ手順書
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 1a167fc
+- 対象コミット: 055c3ef
 - 作成日: 2026-08-12
-- 更新日: 2026-08-13
+- 更新日: 2026-10-21
 - 生成者: Claude Code
 
 本文中、`docs/auth-design.md` に根拠を持つ記述には `(auth-design.md §NN)` を、`docs/github-oauth-setup.md` に根拠を持つ記述には `(github-oauth-setup.md §NN)` を付ける。
 それ以外の記述は、2026-08-12 に実施したデプロイ作業で確認した事実、または本文書が下す確定事項である。
+ただし第 15 章のうち確認日を明記した行は、その日に本番環境で確認した事実である。
 実施して確認済みの事実と、環境（Supabase の新規プロジェクトに割り当てられる鍵の状態、実施環境のネットワーク構成など）によって変わりうる事項は、章ごとに書き分ける。
 
 ## 目次
@@ -296,7 +297,8 @@ Vercel 上で動作する Auth.js は、これらをデプロイ先ドメイン�
 | 症状 | 原因 | 対処 |
 |---|---|---|
 | `make db-push` が Connection timed out になる | ネットワーク層の問題（Postgres ポート遮断、または IPv6 経路がない）。`SUPABASE_DB_PASSWORD` の設定を促すメッセージが出ても、パスワードは原因ではない | pooler ホストの 5432/6543 ポートへの TCP 疎通と、`https://<ref>.supabase.co/rest/v1/` への HTTPS 疎通（401 が返れば到達できている）を比較して判別する。制限のない回線から実行するか、第 7.2 節の Management API 経路を使う |
-| GitHub 認可後、dagdo 側で 500 エラーになる | `next_auth` schema が Data API に公開されていない、または `SUPABASE_SECRET_KEY` が誤っている（`github-oauth-setup.md` §8 と同様） | 第 5 章の Exposed schemas 設定を確認する。あわせて `SUPABASE_SECRET_KEY` の値を確認する |
+| GitHub 認可後、dagdo 側で 500 エラーになる | `next_auth` schema が Data API に公開されていない、または `SUPABASE_SECRET_KEY` が誤っている（`github-oauth-setup.md` §8 と同様）。Supabase プロジェクトが停止している場合も callback 以降で失敗する（次行） | 先に次行の手順で Supabase プロジェクトの status が `INACTIVE` でないことを確認する。そのうえで第 5 章の Exposed schemas 設定を確認する。あわせて `SUPABASE_SECRET_KEY` の値を確認する |
+| GitHub 認可後、Auth.js のエラーページ「Server error / There is a problem with the server configuration.」（`/api/auth/error?error=Configuration`）が表示される（2026-10-21 に確認）。`/api/auth/providers` と `/api/auth/csrf` は 200 を返し、GitHub の authorize 画面までは遷移する | hosted Supabase プロジェクトが停止（status `INACTIVE`）しており、`https://<ref>.supabase.co` が DNS 解決できない。停止の理由は無料プランの自動 pause と推定する（未確認）。SupabaseAdapter の呼び出しが例外になり、Auth.js（`@auth/core` 0.41.3 の `lib/init.js` の adapterErrorHandler）がそれを `AdapterError` に包む。`AdapterError` は client-safe なエラーではないため、`error=Configuration` にマップされる | `npx supabase projects list` で status を確認する。`INACTIVE` なら、Supabase Dashboard の "Restore project"、または Management API の `POST /v1/projects/<ref>/restore` で再開する。再開後、Exposed schemas に `next_auth` が残っていることを確認する（第 5 章）。再発防止の選択肢は、定期的にアクセスすること、または有料プランにすることである（どちらを採るかは 2026-10-21 時点で未決） |
 | Vercel の初回ビルドが `supabaseUrl is required` 等のエラーで失敗する | 環境変数が未設定のまま Vercel がビルドしている（第 8 章） | 第 11 章の環境変数を設定し、Redeploy する |
 | ログイン後に `*.vercel.app` 側へ戻される、または callback 不一致になる | `*.vercel.app` ドメインの Redirect が未設定（第 9 章）、または Auth.js がデプロイ先ドメインの自動検出に失敗している | `*.vercel.app` の Redirect 設定を確認する。解消しない場合は `AUTH_URL=https://dagdo.ngmtine.com` を設定する（第 11 章） |
 | Cloudflare 経由でアクセスするとリダイレクトループになる、または証明書エラーになる | DNS レコードの Proxy status が Proxied になっている（第 9 章） | Proxy status を DNS only に変更する |
@@ -323,7 +325,7 @@ Vercel 上で動作する Auth.js は、これらをデプロイ先ドメイン�
 ---
 
 - 対象リポジトリ: dagdo
-- 対象コミット: 1a167fc
+- 対象コミット: 055c3ef
 - 作成日: 2026-08-12
-- 更新日: 2026-08-13
+- 更新日: 2026-10-21
 - 生成者: Claude Code
